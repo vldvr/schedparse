@@ -460,7 +460,8 @@ def get_ruz():
         discipline_ids = filters.get('disciplineIds')
         location_ids = filters.get('locationIds')
         eblan_ids = filters.get('eblanIds')
-        
+        group_id = filters.get('groupId')  # Extract group ID from filters
+    
         # Convert IDs to integers if they're provided
         if discipline_ids is not None:
             discipline_ids = [int(id) for id in discipline_ids]
@@ -468,6 +469,8 @@ def get_ruz():
             location_ids = [int(id) for id in location_ids]
         if eblan_ids is not None:
             eblan_ids = [int(id) for id in eblan_ids]
+        if group_id is not None and isinstance(group_id, str) and group_id.isdigit():
+            group_id = int(group_id)
         
         # Parse date range
         try:
@@ -495,13 +498,16 @@ def get_ruz():
         
         # Fetch schedule data from external API
         # Get group ID from filters if available
-        group_id = None
         if eblan_ids is not None and len(eblan_ids) > 0:
             # If filtering by lecturer, pass the first lecturer ID
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_ids[0])
-        else:
-            # Otherwise try to get group from the request
+        elif group_id is not None:
+            # Use the provided group ID
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
+        else:
+            # Fallback to default group
+            default_group_id = 154479  # ИБ23-8
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=default_group_id)
         
         print(f"Found {len(schedule_data)} schedule entries before filtering")
         
