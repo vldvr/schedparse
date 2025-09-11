@@ -494,7 +494,15 @@ def get_ruz():
         print(f"API date range: {api_start_date} to {api_end_date}")
         
         # Fetch schedule data from external API
-        schedule_data = fetch_schedule_data(api_start_date, api_end_date)
+        # Get group ID from filters if available
+        group_id = None
+        if eblan_ids is not None and len(eblan_ids) > 0:
+            # If filtering by lecturer, pass the first lecturer ID
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_ids[0])
+        else:
+            # Otherwise try to get group from the request
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
+        
         print(f"Found {len(schedule_data)} schedule entries before filtering")
         
         # Initialize list to store processed lessons
@@ -674,7 +682,9 @@ def search():
             return jsonify({"result": [], "error": "Search string too short, minimum 2 characters"})
         
         # Generate cache key
-        cache_key = f"search_result_{search_string}_{type_filter}"
+        # handle None type_filter
+        type_filter_str = str(type_filter) if type_filter is not None else "all"
+        cache_key = f"search_result_{search_string}_{type_filter_str}"
         
         # Check if we have these search results in cache
         cached_results = search_cache.get(cache_key)
@@ -717,8 +727,12 @@ def search():
                 except Exception as e:
                     print(f"Error in search task for type {search_type}: {e}")
         
-        # Cache the results
-        search_cache.set(cache_key, results)
+        try:
+            # Explicitly try to cache the results
+            search_cache.set(cache_key, results)
+            print(f"Successfully cached search results for key: {cache_key}")
+        except Exception as cache_error:
+            print(f"ERROR: Failed to cache search results: {cache_error}")
         
         # Return the results
         return jsonify({"result": results})
