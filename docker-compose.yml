@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  schedparse:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: schedparse_app
+    ports:
+      - "3434:5000"
+    volumes:
+      - ./app.py:/app/app.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/cacheStats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    # Install curl for healthcheck
+    command: >
+      bash -c "apt-get update && apt-get install -y curl && python app.py"
