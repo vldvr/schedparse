@@ -1,1 +1,62 @@
-*.zip
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+.python-version
+
+# Flask
+instance/
+.webassets-cache
+flask_session/
+
+# Development/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+.env
+*.log
+*.db
+*.sqlite3
+*.sqlite
+.cache/
+.coverage
+
+# Redis files if you add Redis later
+*.rdb
+redis-data/
+
+# Sensitive information
+config.json
+secrets.json
+
+# Local development settings
+local_settings.py
