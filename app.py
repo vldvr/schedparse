@@ -3,18 +3,23 @@ try:
 except ImportError:
     import json
 
+import os
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
 import requests
 import hashlib
 from flask_cors import CORS
 import functools
+import traceback
 import time
 import concurrent.futures
 # Add these imports for performance improvements
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import gzip
+# New imports for Redis and scheduling
+import redis
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 CORS(app)  # This is all you need for CORS handling
@@ -49,59 +54,94 @@ adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retry_st
 session.mount("http://", adapter)
 session.mount("https://", adapter)
 
-# Simple cache implementation
-class SimpleCache:
-    def __init__(self, default_ttl=3600):  # Default TTL: 1 hour
-        self.cache = {}
-        self.expiry = {}
+# Configure Redis connection
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+
+# Redis-based cache implementation (preserves SimpleCache interface)
+class RedisCache:
+    def __init__(self, prefix, default_ttl=3600):  # Default TTL: 1 hour
+        self.prefix = prefix
         self.default_ttl = default_ttl
+        self.hits = 0
+        self.misses = 0
+    
+    def _make_key(self, key):
+        return f"{self.prefix}:{key}"
         
     def set(self, key, value, ttl=None):
         if ttl is None:
             ttl = self.default_ttl
-        self.cache[key] = value
-        self.expiry[key] = time.time() + ttl
+        redis_key = self._make_key(key)
+        
+        # Enhanced logging for cache storage
+        if value is None:
+            print(f"WARNING: Attempting to cache None value for key {redis_key}")
+            return
+            
+        # Log information about cached data
+        data_type = type(value).__name__
+        if isinstance(value, list):
+            data_length = len(value)
+            print(f"Caching {data_type} with {data_length} items for key {redis_key} (TTL: {ttl}s)")
+            if data_length == 0:
+                print(f"WARNING: Caching empty list for key {redis_key}")
+        else:
+            print(f"Caching {data_type} for key {redis_key} (TTL: {ttl}s)")
+            
+        redis_client.setex(redis_key, ttl, json.dumps(value))
     
     def get(self, key):
-        if key not in self.cache:
+        redis_key = self._make_key(key)
+        data = redis_client.get(redis_key)
+        if data is None:
+            self.misses += 1
+            print(f"Cache MISS for key {redis_key}")
             return None
-        if time.time() > self.expiry[key]:
-            # Cache expired
-            del self.cache[key]
-            del self.expiry[key]
+            
+        self.hits += 1
+        try:
+            parsed_data = json.loads(data)
+            data_type = type(parsed_data).__name__
+            if isinstance(parsed_data, list):
+                print(f"Cache HIT for key {redis_key}: {data_type} with {len(parsed_data)} items")
+                if len(parsed_data) == 0:
+                    print(f"WARNING: Retrieved empty list from cache for key {redis_key}")
+            else:
+                print(f"Cache HIT for key {redis_key}: {data_type}")
+            return parsed_data
+        except json.JSONDecodeError:
+            print(f"ERROR: Invalid JSON in cache for key {redis_key}")
+            self.misses += 1  # Adjust counter since this is effectively a miss
             return None
-        return self.cache[key]
-    
+
     def clear(self):
-        self.cache.clear()
-        self.expiry.clear()
+        keys = redis_client.keys(f"{self.prefix}:*")
+        if keys:
+            redis_client.delete(*keys)
+        self.hits = 0
+        self.misses = 0
 
     def stats(self):
         """Return cache statistics."""
-        now = time.time()
-        total = len(self.cache)
-        expired = sum(1 for exp in self.expiry.values() if now > exp)
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total * 100) if total > 0 else 0
         return {
-            "total_entries": total,
-            "active_entries": total - expired,
-            "expired_entries": expired
+            "hits": self.hits, 
+            "misses": self.misses,
+            "hit_rate": f"{hit_rate:.2f}%",
+            "total_requests": total
         }
     
     def prune(self):
-        """Remove expired entries from cache."""
-        now = time.time()
-        expired_keys = [k for k, exp in self.expiry.items() if now > exp]
-        for key in expired_keys:
-            if key in self.cache:
-                del self.cache[key]
-            if key in self.expiry:
-                del self.expiry[key]
-        return len(expired_keys)
+        """Redis automatically handles expiry, no manual pruning needed."""
+        pass
 
 # Initialize cache instances
-schedule_cache = SimpleCache(default_ttl=1800)  # 30 minutes for schedule data
-search_cache = SimpleCache(default_ttl=600)     # 10 minutes for search results
-filter_cache = SimpleCache(default_ttl=1800)    # 30 minutes for filter options
+schedule_cache = RedisCache(prefix="schedule", default_ttl=1800)  # 30 minutes for schedule data
+search_cache = RedisCache(prefix="search", default_ttl=600)     # 10 minutes for search results
+filter_cache = RedisCache(prefix="filter", default_ttl=1800)    # 30 minutes for filter options
 
 # Fetch schedule data from external API with caching
 def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, language=3):
@@ -124,10 +164,10 @@ def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, lan
     # Check if we have this data in cache
     cached_data = schedule_cache.get(cache_key)
     if cached_data is not None:
-        print(f"Cache hit for schedule data: {cache_key}")
+        print(f"Using cached schedule data for: {start_date} to {end_date}, group_id={group_id}, person_id={person_id}")
         return cached_data
         
-    print(f"Cache miss for schedule data: {cache_key}")
+    print(f"Fetching fresh schedule data for: {start_date} to {end_date}, group_id={group_id}, person_id={person_id}")
     
     params = {
         "start": start_date,
@@ -149,18 +189,83 @@ def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, lan
             print(f"Fetching default group schedule: {url} with params {params}")
 
         response = session.get(url, params=params)
-        print(f"API response status: {response.status_code}")
-        print(f"API response headers: {response.headers}")
-        print(f"API response body snippet: {response.text[:200]}")
+        print(f"API response status: {response.status_code}, Content-Type: {response.headers.get('Content-Type')}")
         response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()
         
+        # Enhanced logging for the retrieved data
+        if isinstance(data, list):
+            print(f"Retrieved {len(data)} schedule items from API")
+            if len(data) == 0:
+                print(f"WARNING: API returned empty schedule for {start_date} to {end_date}, group_id={group_id}, person_id={person_id}")
+        else:
+            print(f"WARNING: API returned non-list data: {type(data).__name__}")
+            
         # Cache the result
         schedule_cache.set(cache_key, data)
         return data
     except requests.exceptions.RequestException as e:
         print(f"Error fetching schedule data: {e}")
+        # Don't cache errors
         return []
+    except json.JSONDecodeError as e:
+        print(f"Error parsing API response as JSON: {e}")
+        print(f"Response content (first 200 chars): {response.text[:200]}")
+        # Don't cache invalid responses
+        return []
+
+# New function to preload schedule for ИБ23-8
+def preload_ib238_schedule():
+    """Preload schedule data for group ИБ23-8 (ID: 154479)"""
+    print("=" * 50)
+    print("Preloading schedule for group ИБ23-8 (ID: 154479)...")
+    print("=" * 50)
+    
+    try:
+        # Get current date
+        today = datetime.now()
+        
+        # Get first day of current month
+        start_date = today.replace(day=1).strftime("%Y.%m.%d")
+        
+        # Get last day of current month
+        if today.month == 12:
+            end_date = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+        else:
+            end_date = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+        end_date = end_date.strftime("%Y.%m.%d")
+        
+        print(f"Fetching schedule for current month: {start_date} to {end_date}")
+        current_month_data = fetch_schedule_data(start_date, end_date, group_id=154479)
+        print(f"Current month data fetched: {len(current_month_data)} entries")
+        
+        # Get first day of next month
+        if today.month == 12:
+            next_month_start = datetime(today.year + 1, 1, 1)
+        else:
+            next_month_start = today.replace(month=today.month + 1, day=1)
+        next_month_start_str = next_month_start.strftime("%Y.%m.%d")
+        
+        # Get last day of next month
+        if next_month_start.month == 12:
+            next_month_end = next_month_start.replace(year=next_month_start.year + 1, month=1, day=1) - timedelta(days=1)
+        else:
+            next_month_end = next_month_start.replace(month=next_month_start.month + 1, day=1) - timedelta(days=1)
+        next_month_end_str = next_month_end.strftime("%Y.%m.%d")
+        
+        print(f"Fetching schedule for next month: {next_month_start_str} to {next_month_end_str}")
+        next_month_data = fetch_schedule_data(next_month_start_str, next_month_end_str, group_id=154479)
+        print(f"Next month data fetched: {len(next_month_data)} entries")
+        
+        # Cache status report
+        cache_stats = schedule_cache.stats()
+        print(f"Cache statistics after preload: {cache_stats}")
+        print("Schedule preloading for ИБ23-8 completed successfully")
+        print("=" * 50)
+    except Exception as e:
+        print(f"ERROR during schedule preloading: {e}")
+        print(f"Stack trace: {traceback.format_exc()}")
+        print("=" * 50)
 
 # Generate a stable ID based on name
 def generate_stable_id(text):
@@ -643,25 +748,6 @@ def cache_stats():
     except Exception as e:
         return jsonify({"error": f"Failed to get cache stats: {str(e)}"}), 500
 
-# Add background pruning
-import threading
-
-def background_prune():
-    """Periodically prune all caches in the background."""
-    while True:
-        time.sleep(300)  # Run every 5 minutes
-        try:
-            schedule_cache.prune()
-            search_cache.prune()
-            filter_cache.prune()
-            print("Cache pruning complete")
-        except Exception as e:
-            print(f"Error during cache pruning: {e}")
-
-# Start the background pruning thread
-prune_thread = threading.Thread(target=background_prune, daemon=True)
-prune_thread.start()
-
 # Add batch processing for large response generation
 def batch_process(items, process_func, batch_size=100):
     """Process items in batches to avoid blocking the event loop too long."""
@@ -672,5 +758,16 @@ def batch_process(items, process_func, batch_size=100):
         results.extend(batch_results)
     return results
 
+# Initialize scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
+
 if __name__ == '__main__':
+    # Preload schedule data on startup
+    preload_ib238_schedule()
+    
+    # Start the scheduler
+    scheduler.start()
+    
+    # Start Flask application
     app.run(host='0.0.0.0', debug=True)
