@@ -447,8 +447,13 @@ def get_ruz():
             date_to_str = data.get('dateTo', '2025-09-30T23:59:59Z')
             filters = data.get('filters', {})
         
-        # Generate cache key
-        cache_key = f"ruz_{date_from_str}_{date_to_str}_{json.dumps(filters, sort_keys=True)}"
+        # Улучшенное формирование ключа кэша с чётким выделением group_id
+        group_id_str = str(filters.get('groupId', 'default'))
+        eblan_id_str = str(filters.get('eblanIds', ['default'])[0] if filters.get('eblanIds') else 'default')
+        cache_key = f"ruz_{date_from_str}_{date_to_str}_group_{group_id_str}_filters_{hash(json.dumps(filters))}"
+        
+        # Добавим отладочную информацию
+        print(f"Using cache key: {cache_key}, filters: {filters}")
         
         # Check cache first
         cached_data = schedule_cache.get(cache_key)
@@ -498,12 +503,16 @@ def get_ruz():
         
         # Fetch schedule data from external API
         # Get group ID from filters if available
-        if eblan_ids is not None and len(eblan_ids) > 0:
-            # If filtering by lecturer, pass the first lecturer ID
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_ids[0])
-        elif group_id is not None:
-            # Use the provided group ID
+        if group_id is not None:
+            # Always fetch by group ID when available
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
+        # Only use lecturer ID if no group ID available
+        elif eblan_ids is not None and len(eblan_ids) > 0:
+            all_schedule_data = []
+            for eblan_id in eblan_ids:
+                data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id)
+                all_schedule_data.extend(data)
+            schedule_data = all_schedule_data
         else:
             # Fallback to default group
             default_group_id = 154479  # ИБ23-8
@@ -753,6 +762,23 @@ def clear_cache():
         search_cache.clear()
         filter_cache.clear()
         return jsonify({"status": "success", "message": "All caches cleared"})
+    except Exception as e:
+        return jsonify({"error": f"Failed to clear cache: {str(e)}"}), 500
+
+@app.route('/api/clearGroupCache', methods=['POST'])
+def clear_group_cache():
+    try:
+        data = request.get_json(silent=True) or {}
+        group_id = data.get('groupId')
+        
+        # Удаление ключей, связанных с группой
+        if group_id:
+            keys = redis_client.keys(f"schedule:ruz_*_group_{group_id}_*")
+            if keys:
+                redis_client.delete(*keys)
+            return jsonify({"status": "success", "message": f"Cache cleared for group {group_id}"})
+        else:
+            return jsonify({"error": "No groupId provided"}), 400
     except Exception as e:
         return jsonify({"error": f"Failed to clear cache: {str(e)}"}), 500
 
