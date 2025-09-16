@@ -506,20 +506,17 @@ def get_ruz():
         
         # Fetch schedule data from external API
         # Prioritize lecturer ID if available
-        if eblan_ids is not None and len(eblan_ids) > 0:
+        if group_id is not None:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
+        
+        elif eblan_ids is not None and len(eblan_ids) > 0:
             all_schedule_data = []
             # Fetch schedule for each lecturer
             for eblan_id in eblan_ids:
                 data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id)
                 all_schedule_data.extend(data)
             schedule_data = all_schedule_data
-        # Then check for group ID
-        elif group_id is not None:
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
-        else:
-            # Fallback to default group if nothing is selected
-            default_group_id = 154479  # ИБ23-8
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=default_group_id)
+       
         
         print(f"Found {len(schedule_data)} schedule entries before filtering")
         
@@ -557,15 +554,15 @@ def get_ruz():
                 filtered_out_reason = None
                 
                 # Apply filters
-                if discipline_ids is not None and discipline_id not in discipline_ids:
+                if discipline_ids is not None and discipline_id is not None and discipline_id not in discipline_ids:
                     filtered_out = True
                     filtered_out_reason = f"discipline_id {discipline_id} not in filter list"
                     
-                if not filtered_out and location_ids is not None and location_id not in location_ids:
+                if not filtered_out and location_ids is not None and location_id is not None and location_id not in location_ids:
                     filtered_out = True
                     filtered_out_reason = f"location_id {location_id} not in filter list"
                     
-                if not filtered_out and eblan_ids is not None and eblan_id not in eblan_ids:
+                if not filtered_out and eblan_ids is not None and eblan_id is not None and eblan_id not in eblan_ids:
                     filtered_out = True
                     filtered_out_reason = f"eblan_id {eblan_id} not in filter list {eblan_ids}"
             
@@ -817,7 +814,7 @@ scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
 
 if __name__ == '__main__':
     # Preload schedule data on startup
-    preload_ib238_schedule()
+
     
     # Start the scheduler
     scheduler.start()
