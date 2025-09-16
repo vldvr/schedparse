@@ -582,7 +582,7 @@ def get_ruz():
                 kind_of_work = entry.get('kindOfWork', '').lower()
                 is_lecture = any(
                     kw in kind_of_work
-                    for kw in ['лекция', 'lecture', 'лекц.']
+                    for kw in ['лекции', 'lecture', 'лекц.']
                 )
 
                 # Prepare lecturer (eblan) info
