@@ -508,15 +508,8 @@ def get_ruz():
         # Prioritize lecturer ID if available
         if group_id is not None:
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
-        
-        elif eblan_ids is not None and len(eblan_ids) > 0:
-            all_schedule_data = []
-            # Fetch schedule for each lecturer
-            for eblan_id in eblan_ids:
-                data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id)
-                all_schedule_data.extend(data)
-            schedule_data = all_schedule_data
-       
+        else:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=154479)
         
         print(f"Found {len(schedule_data)} schedule entries before filtering")
         
