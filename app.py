@@ -178,7 +178,7 @@ def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, lan
     try:
         # Prioritize person schedule if both are provided
         if person_id:
-            url = f"https://ruz.fa.ru/api/schedule/person/{person_id}"
+            url = f"https://ruz.fa.ru/api/schedule/lecturer/{person_id}"
             print(f"Fetching person schedule: {url} with params {params}")
         elif group_id:
             url = f"https://ruz.fa.ru/api/schedule/group/{group_id}"
@@ -468,8 +468,9 @@ def get_ruz():
         discipline_ids = filters.get('disciplineIds')
         location_ids = filters.get('locationIds')
         eblan_ids = filters.get('eblanIds')
-        group_id = filters.get('groupId')  # Extract group ID from filters
-    
+        group_ids = filters.get('groupIds') or ([filters.get('groupId')] if filters.get('groupId') else [])
+        # group_ids теперь всегда список
+
         # Convert IDs to integers if they're provided
         if discipline_ids is not None:
             discipline_ids = [int(id) for id in discipline_ids]
@@ -477,9 +478,8 @@ def get_ruz():
             location_ids = [int(id) for id in location_ids]
         if eblan_ids is not None:
             eblan_ids = [int(id) for id in eblan_ids]
-        if group_id is not None and isinstance(group_id, str) and group_id.isdigit():
-            group_id = int(group_id)
-        
+        group_ids = [int(gid) for gid in group_ids if gid]
+
         # Parse date range
         try:
             date_from = datetime.fromisoformat(date_from_str.replace('Z', '+00:00'))
@@ -506,11 +506,18 @@ def get_ruz():
         
         # Fetch schedule data from external API
         # Prioritize lecturer ID if available
-        if group_id is not None:
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
+                # Fetch schedule data from external API
+        # Если есть только eblanIds — ищем по каждому преподу!
+        if eblan_ids and not group_ids:
+            schedule_data = []
+            for eblan_id in eblan_ids:
+                schedule_data.extend(fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id))
+        elif group_ids:
+            schedule_data = []
+            for gid in group_ids:
+                schedule_data.extend(fetch_schedule_data(api_start_date, api_end_date, group_id=gid))
         else:
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=154479)
-        
         print(f"Found {len(schedule_data)} schedule entries before filtering")
         
         # Initialize list to store processed lessons
