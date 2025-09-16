@@ -347,9 +347,12 @@ def get_filter_options():
         
         # Fetch schedule data from external API
         # Prioritize person_id if provided, otherwise use group_id
-        schedule_data = fetch_schedule_data(api_start_date, api_end_date, 
-                                           group_id=group_id, 
-                                           person_id=person_id)
+        if person_id is not None:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, 
+                                               person_id=person_id)
+        else:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, 
+                                               group_id=group_id)
         
         # Initialize sets to store unique values
         disciplines = set()
@@ -502,19 +505,19 @@ def get_ruz():
         print(f"API date range: {api_start_date} to {api_end_date}")
         
         # Fetch schedule data from external API
-        # Get group ID from filters if available
-        if group_id is not None:
-            # Always fetch by group ID when available
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
-        # Only use lecturer ID if no group ID available
-        elif eblan_ids is not None and len(eblan_ids) > 0:
+        # Prioritize lecturer ID if available
+        if eblan_ids is not None and len(eblan_ids) > 0:
             all_schedule_data = []
+            # Fetch schedule for each lecturer
             for eblan_id in eblan_ids:
                 data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id)
                 all_schedule_data.extend(data)
             schedule_data = all_schedule_data
+        # Then check for group ID
+        elif group_id is not None:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
         else:
-            # Fallback to default group
+            # Fallback to default group if nothing is selected
             default_group_id = 154479  # ИБ23-8
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=default_group_id)
         
@@ -529,7 +532,7 @@ def get_ruz():
                 # Skip entries without a date or time info
                 if not entry.get('date') or not entry.get('beginLesson') or not entry.get('endLesson'):
                     continue
-                
+
                 # Generate stable IDs for filtering
                 discipline_name = entry.get('discipline', '')
                 discipline_id = generate_stable_id(discipline_name) if discipline_name else None
@@ -574,11 +577,14 @@ def get_ruz():
                 date_str = entry.get('date')
                 start_time_str = entry.get('beginLesson', '00:00')
                 end_time_str = entry.get('endLesson', '00:00')
-                
-                # Format as ISO datetime WITHOUT seconds
-                start_datetime = f"{date_str}T{start_time_str}Z"
-                end_datetime = f"{date_str}T{end_time_str}Z"
-                
+
+                # Определяем лекция ли это
+                kind_of_work = entry.get('kindOfWork', '').lower()
+                is_lecture = any(
+                    kw in kind_of_work
+                    for kw in ['лекция', 'lecture', 'лекц.']
+                )
+
                 # Prepare lecturer (eblan) info
                 eblan_name = lecturer_field
                 
@@ -595,8 +601,9 @@ def get_ruz():
                 
                 # Create lesson object
                 lesson = {
-                    "start": start_datetime,
-                    "end": end_datetime,
+                    "start": f"{date_str}T{start_time_str}Z",
+                    "end": f"{date_str}T{end_time_str}Z",
+                    "isLecture": is_lecture,  # <--- Новое поле
                     "eblanInfo": {
                         "eblanId": eblan_id,
                         "eblanName": eblan_name,
@@ -612,7 +619,7 @@ def get_ruz():
                         "DisciplineName": discipline_name
                     }
                 }
-                
+
                 lessons.append(lesson)
                 
             except Exception as e:
