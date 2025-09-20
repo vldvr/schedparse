@@ -97,6 +97,24 @@ def update_eblan_info_from_api(eblan_id, eblan_name):
     except Exception as e:
         print(f"Error updating eblan info: {e}")
 
+def upsert_eblan_fio(eblan_id, eblan_fio):
+    """Создаёт или обновляет ФИО преподавателя в базе."""
+    if not eblan_id or not eblan_fio:
+        return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO eblans (eblan_id, eblan_fio, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (eblan_id) DO UPDATE
+                    SET eblan_fio = EXCLUDED.eblan_fio,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (eblan_id, eblan_fio))
+                conn.commit()
+    except Exception as e:
+        print(f"Error upserting eblan fio: {e}")
+
 def init_database():
     """Initialize database tables."""
     if not db_pool:
@@ -1108,6 +1126,13 @@ def get_ruz():
 
                 # Prepare lecturer (eblan) info
                 eblan_name = lecturer_field
+
+                if eblan_id and eblan_name:
+                    try:
+                        upsert_eblan_fio(eblan_id, eblan_name)
+                    except Exception as e:
+                        print(f"Failed to upsert eblan fio: {e}")
+
                 
                 # Generate short name
                 eblan_short = ""
