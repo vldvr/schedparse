@@ -188,20 +188,23 @@ def process_and_save_image(file_data, filename, subfolder):
 @app.after_request
 def add_compression(response):
     """Compress response data with gzip for supported clients."""
+    # Не трогаем direct_passthrough-ответы (например, send_from_directory)
+    if getattr(response, 'direct_passthrough', False):
+        return response
+
     accept_encoding = request.headers.get('Accept-Encoding', '')
-    
     if 'gzip' not in accept_encoding.lower():
         return response
-    
+
     if (response.status_code < 200 or response.status_code >= 300 or
             'Content-Encoding' in response.headers):
         return response
-    
+
     response.data = gzip.compress(response.data)
     response.headers['Content-Encoding'] = 'gzip'
     response.headers['Vary'] = 'Accept-Encoding'
     response.headers['Content-Length'] = len(response.data)
-    
+
     return response
 
 # Serve uploaded images
