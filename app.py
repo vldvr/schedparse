@@ -4,7 +4,8 @@ except ImportError:
     import json
 
 import os
-from flask import Flask, request, jsonify
+import uuid
+from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timedelta
 import requests
 import hashlib
@@ -20,9 +21,169 @@ import gzip
 # New imports for Redis and scheduling
 import redis
 from apscheduler.schedulers.background import BackgroundScheduler
+# PostgreSQL imports
+import psycopg2
+from psycopg2 import pool
+from contextlib import contextmanager
+# File upload imports
+from werkzeug.utils import secure_filename
+from PIL import Image
+import io
 
 app = Flask(__name__)
 CORS(app)  # This is all you need for CORS handling
+
+# Configuration
+UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', './uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+MAX_FILE_SIZE = 16 * 1024 * 1024  # 16MB
+
+# Create upload directory if it doesn't exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_FOLDER, 'eblans'), exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_FOLDER, 'lectures'), exist_ok=True)
+
+# PostgreSQL Configuration
+DB_CONFIG = {
+    'host': os.environ.get('DB_HOST', 'localhost'),
+    'port': int(os.environ.get('DB_PORT', 5432)),
+    'database': os.environ.get('DB_NAME', 'schedparse_db'),
+    'user': os.environ.get('DB_USER', 'postgres'),
+    'password': os.environ.get('DB_PASSWORD', 'password')
+}
+
+# Create connection pool
+try:
+    db_pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=20,
+        **DB_CONFIG
+    )
+    print("PostgreSQL connection pool created successfully")
+except Exception as e:
+    print(f"Error creating PostgreSQL connection pool: {e}")
+    db_pool = None
+
+@contextmanager
+def get_db_connection():
+    """Context manager for database connections."""
+    if not db_pool:
+        raise Exception("Database pool not available")
+    
+    conn = db_pool.getconn()
+    try:
+        yield conn
+    finally:
+        db_pool.putconn(conn)
+
+def update_eblan_info_from_api(eblan_id, eblan_name):
+    """Update eblan info in database from schedule API data."""
+    if not db_pool:
+        return
+        
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO eblans (eblan_id, eblan_fio, updated_at) 
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (eblan_id) 
+                    DO UPDATE SET 
+                        eblan_fio = COALESCE(eblans.eblan_fio, EXCLUDED.eblan_fio),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (eblan_id, eblan_name))
+                conn.commit()
+                print(f"Updated eblan info for {eblan_id}: {eblan_name}")
+    except Exception as e:
+        print(f"Error updating eblan info: {e}")
+
+def init_database():
+    """Initialize database tables."""
+    if not db_pool:
+        print("Skipping database initialization - no connection pool")
+        return
+        
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Create eblans table for storing lecturer info and ratings
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS eblans (
+                        eblan_id INTEGER PRIMARY KEY,
+                        eblan_fio VARCHAR(255),
+                        eblan_img VARCHAR(500),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Create comments table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS eblan_comments (
+                        id SERIAL PRIMARY KEY,
+                        eblan_id INTEGER NOT NULL,
+                        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                        comment TEXT,
+                        features TEXT[], -- Array of feature strings
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        ip_address INET,
+                        FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE CASCADE
+                    )
+                """)
+                
+                # Create lecture images table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS lecture_images (
+                        id SERIAL PRIMARY KEY,
+                        eblan_id INTEGER NOT NULL,
+                        lect_string VARCHAR(100) NOT NULL,
+                        image_path VARCHAR(500) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        ip_address INET,
+                        FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE CASCADE
+                    )
+                """)
+                
+                # Create indexes for better performance
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_eblan_id ON eblan_comments(eblan_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_eblan_lect ON lecture_images(eblan_id, lect_string)")
+                
+                conn.commit()
+                print("Database tables initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+
+def allowed_file(filename):
+    """Check if file extension is allowed."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def process_and_save_image(file_data, filename, subfolder):
+    """Process and save image with compression and resizing."""
+    try:
+        # Open image
+        image = Image.open(io.BytesIO(file_data))
+        
+        # Convert to RGB if necessary
+        if image.mode in ('RGBA', 'P'):
+            image = image.convert('RGB')
+        
+        # Resize if too large (max 1920x1080)
+        max_width, max_height = 1920, 1080
+        if image.width > max_width or image.height > max_height:
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        
+        # Generate unique filename
+        file_ext = 'jpg'  # Always save as JPEG for consistency
+        unique_filename = f"{uuid.uuid4().hex}.{file_ext}"
+        file_path = os.path.join(UPLOAD_FOLDER, subfolder, unique_filename)
+        
+        # Save with compression
+        image.save(file_path, 'JPEG', quality=85, optimize=True)
+        
+        return f"/images/{subfolder}/{unique_filename}"
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        return None
 
 @app.after_request
 def add_compression(response):
@@ -42,6 +203,19 @@ def add_compression(response):
     response.headers['Content-Length'] = len(response.data)
     
     return response
+
+# Serve uploaded images
+@app.route('/images/<subfolder>/<filename>')
+def serve_image(subfolder, filename):
+    """Serve uploaded images."""
+    if subfolder not in ['eblans', 'lectures']:
+        return jsonify({"error": "Invalid subfolder"}), 404
+        
+    return send_from_directory(
+        os.path.join(UPLOAD_FOLDER, subfolder), 
+        filename,
+        as_attachment=False
+    )
 
 # Configure requests to use connection pooling and retries
 session = requests.Session()
@@ -142,6 +316,355 @@ class RedisCache:
 schedule_cache = RedisCache(prefix="schedule", default_ttl=1800)  # 30 minutes for schedule data
 search_cache = RedisCache(prefix="search", default_ttl=600)     # 10 minutes for search results
 filter_cache = RedisCache(prefix="filter", default_ttl=1800)    # 30 minutes for filter options
+
+# NEW RATING ENDPOINTS
+
+@app.route('/api/getEblanRating', methods=['GET', 'POST'])
+def get_eblan_rating():
+    """Get lecturer rating and info."""
+    try:
+        if request.method == 'GET':
+            eblan_id = request.args.get('eblanId')
+            lect_string = request.args.get('lectString', '')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            eblan_id = data.get('eblanId')
+            lect_string = data.get('lectString', '')
+
+        if not eblan_id:
+            return jsonify({"error": "eblanId is required"}), 400
+
+        try:
+            eblan_id = int(eblan_id)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid eblanId format"}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Get or create eblan record
+                cur.execute("SELECT eblan_fio, eblan_img FROM eblans WHERE eblan_id = %s", (eblan_id,))
+                eblan_row = cur.fetchone()
+                
+                if not eblan_row:
+                    # If eblan doesn't exist, create with empty info
+                    cur.execute(
+                        "INSERT INTO eblans (eblan_id, eblan_fio, eblan_img) VALUES (%s, %s, %s) ON CONFLICT (eblan_id) DO NOTHING",
+                        (eblan_id, None, None)
+                    )
+                    conn.commit()
+                    eblan_fio, eblan_img = None, None
+                else:
+                    eblan_fio, eblan_img = eblan_row
+
+                # Calculate rating stats
+                cur.execute("""
+                    SELECT 
+                        ROUND(AVG(rating)::numeric, 1) as avg_rating,
+                        COUNT(*) as rating_count
+                    FROM eblan_comments 
+                    WHERE eblan_id = %s
+                """, (eblan_id,))
+                
+                rating_row = cur.fetchone()
+                avg_rating = float(rating_row[0]) if rating_row[0] else 0.0
+                rating_count = rating_row[1] if rating_row[1] else 0
+
+        response = {
+            "eblanImg": eblan_img,
+            "eblanFio": eblan_fio,
+            "rating": avg_rating,
+            "ratingCount": rating_count
+        }
+
+        return jsonify(response)
+
+    except Exception as e:
+        print(f"Error in get_eblan_rating: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/createEblanComment', methods=['POST'])
+def create_eblan_comment():
+    """Create a new comment for lecturer."""
+    try:
+        if not request.is_json:
+            return jsonify({"error": "Request must be JSON"}), 400
+            
+        data = request.get_json(silent=True) or {}
+        eblan_id = data.get('eblanId')
+        rating = data.get('rating')
+        comment = data.get('comment', '')
+        features = data.get('features', [])
+
+        # Validation
+        if not eblan_id:
+            return jsonify({"error": "eblanId is required"}), 400
+        if not rating:
+            return jsonify({"error": "rating is required"}), 400
+
+        try:
+            eblan_id = int(eblan_id)
+            rating = int(rating)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid eblanId or rating format"}), 400
+
+        if rating < 1 or rating > 5:
+            return jsonify({"error": "Rating must be between 1 and 5"}), 400
+
+        if not isinstance(features, list):
+            return jsonify({"error": "Features must be an array"}), 400
+
+        # Get client IP
+        client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR'))
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Ensure eblan exists
+                cur.execute(
+                    "INSERT INTO eblans (eblan_id) VALUES (%s) ON CONFLICT (eblan_id) DO NOTHING",
+                    (eblan_id,)
+                )
+                
+                # Insert comment
+                cur.execute("""
+                    INSERT INTO eblan_comments (eblan_id, rating, comment, features, ip_address)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (eblan_id, rating, comment, features, client_ip))
+                
+                conn.commit()
+
+                # Return all comments for this eblan
+                cur.execute("""
+                    SELECT rating, comment, features
+                    FROM eblan_comments 
+                    WHERE eblan_id = %s
+                    ORDER BY created_at DESC
+                """, (eblan_id,))
+                
+                comments = []
+                for row in cur.fetchall():
+                    comments.append({
+                        "rating": row[0],
+                        "comment": row[1] or "",
+                        "features": row[2] or []
+                    })
+
+        return jsonify(comments)
+
+    except Exception as e:
+        print(f"Error in create_eblan_comment: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/getCommentsByEblan', methods=['GET', 'POST'])
+def get_comments_by_eblan():
+    """Get all comments for a lecturer."""
+    try:
+        if request.method == 'GET':
+            eblan_id = request.args.get('eblanId')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            eblan_id = data.get('eblanId')
+
+        if not eblan_id:
+            return jsonify({"error": "eblanId is required"}), 400
+
+        try:
+            eblan_id = int(eblan_id)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid eblanId format"}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT rating, comment, features
+                    FROM eblan_comments 
+                    WHERE eblan_id = %s
+                    ORDER BY created_at DESC
+                """, (eblan_id,))
+                
+                comments = []
+                for row in cur.fetchall():
+                    comments.append({
+                        "rating": row[0],
+                        "comment": row[1] or "",
+                        "features": row[2] or []
+                    })
+
+        return jsonify(comments)
+
+    except Exception as e:
+        print(f"Error in get_comments_by_eblan: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/uploadEblanImg', methods=['POST'])
+def upload_eblan_img():
+    """Upload lecturer image."""
+    try:
+        eblan_id = request.form.get('eblanId')
+        if not eblan_id:
+            return jsonify({"success": False, "error": "eblanId is required"}), 400
+
+        try:
+            eblan_id = int(eblan_id)
+        except (ValueError, TypeError):
+            return jsonify({"success": False, "error": "Invalid eblanId format"}), 400
+
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "No file selected"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({"success": False, "error": "Invalid file type"}), 400
+
+        # Read and validate file size
+        file_data = file.read()
+        if len(file_data) > MAX_FILE_SIZE:
+            return jsonify({"success": False, "error": "File too large"}), 400
+
+        # Process and save image
+        image_path = process_and_save_image(file_data, file.filename, 'eblans')
+        if not image_path:
+            return jsonify({"success": False, "error": "Error processing image"}), 500
+
+        # Update database
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO eblans (eblan_id, eblan_img, updated_at) 
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (eblan_id) 
+                    DO UPDATE SET eblan_img = EXCLUDED.eblan_img, updated_at = CURRENT_TIMESTAMP
+                """, (eblan_id, image_path))
+                conn.commit()
+
+        return jsonify({"success": True, "error": None})
+
+    except Exception as e:
+        print(f"Error in upload_eblan_img: {e}")
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/uploadLectImg', methods=['POST'])
+def upload_lect_img():
+    """Upload lecture image."""
+    try:
+        lect_string = request.form.get('lectString')
+        eblan_id = request.form.get('eblanId')  # Optional, for association
+        
+        if not lect_string:
+            return jsonify({"success": False, "error": "lectString is required"}), 400
+
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "No file selected"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({"success": False, "error": "Invalid file type"}), 400
+
+        # Parse eblan_id if provided
+        eblan_id_int = None
+        if eblan_id:
+            try:
+                eblan_id_int = int(eblan_id)
+            except (ValueError, TypeError):
+                return jsonify({"success": False, "error": "Invalid eblanId format"}), 400
+
+        # Read and validate file size
+        file_data = file.read()
+        if len(file_data) > MAX_FILE_SIZE:
+            return jsonify({"success": False, "error": "File too large"}), 400
+
+        # Process and save image
+        image_path = process_and_save_image(file_data, file.filename, 'lectures')
+        if not image_path:
+            return jsonify({"success": False, "error": "Error processing image"}), 500
+
+        # Get client IP
+        client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR'))
+
+        # Save to database
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # If eblan_id provided, ensure eblan exists
+                if eblan_id_int:
+                    cur.execute(
+                        "INSERT INTO eblans (eblan_id) VALUES (%s) ON CONFLICT (eblan_id) DO NOTHING",
+                        (eblan_id_int,)
+                    )
+
+                cur.execute("""
+                    INSERT INTO lecture_images (eblan_id, lect_string, image_path, ip_address)
+                    VALUES (%s, %s, %s, %s)
+                """, (eblan_id_int, lect_string, image_path, client_ip))
+                conn.commit()
+
+        return jsonify({"success": True, "error": None})
+
+    except Exception as e:
+        print(f"Error in upload_lect_img: {e}")
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/getLectImgs', methods=['GET', 'POST'])
+def get_lect_imgs():
+    """Get lecture images."""
+    try:
+        if request.method == 'GET':
+            eblan_id = request.args.get('eblanId')
+            lect_string = request.args.get('lectString')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            eblan_id = data.get('eblanId')
+            lect_string = data.get('lectString')
+
+        if not lect_string:
+            return jsonify({"error": "lectString is required"}), 400
+
+        # Parse eblan_id if provided
+        eblan_id_int = None
+        if eblan_id:
+            try:
+                eblan_id_int = int(eblan_id)
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid eblanId format"}), 400
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if eblan_id_int:
+                    # Filter by both eblan_id and lect_string
+                    cur.execute("""
+                        SELECT image_path
+                        FROM lecture_images 
+                        WHERE eblan_id = %s AND lect_string = %s
+                        ORDER BY created_at DESC
+                    """, (eblan_id_int, lect_string))
+                else:
+                    # Filter only by lect_string
+                    cur.execute("""
+                        SELECT image_path
+                        FROM lecture_images 
+                        WHERE lect_string = %s
+                        ORDER BY created_at DESC
+                    """, (lect_string,))
+
+                images = [row[0] for row in cur.fetchall()]
+
+        return jsonify({"lectImgs": images})
+
+    except Exception as e:
+        print(f"Error in get_lect_imgs: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+# EXISTING SCHEDULE ENDPOINTS (keeping all existing functionality)
 
 # Fetch schedule data from external API with caching
 def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, language=3):
@@ -505,8 +1028,6 @@ def get_ruz():
         print(f"API date range: {api_start_date} to {api_end_date}")
         
         # Fetch schedule data from external API
-        # Prioritize lecturer ID if available
-                # Fetch schedule data from external API
         # Если есть только eblanIds — ищем по каждому преподу!
         if eblan_ids and not group_ids:
             schedule_data = []
@@ -813,11 +1334,21 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
 
 if __name__ == '__main__':
+    # Initialize database on startup
+    init_database()
+    
     # Preload schedule data on startup
-
+    try:
+        preload_ib238_schedule()
+    except Exception as e:
+        print(f"Warning: Could not preload schedule data: {e}")
     
     # Start the scheduler
-    scheduler.start()
+    try:
+        scheduler.start()
+        print("Background scheduler started successfully")
+    except Exception as e:
+        print(f"Warning: Could not start scheduler: {e}")
     
     # Start Flask application
     app.run(host='0.0.0.0', debug=True)
