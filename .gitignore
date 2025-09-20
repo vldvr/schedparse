@@ -74,3 +74,5 @@ postgres-data/
 redis-data/
 
 test_api.sh
+
+test_results/
