@@ -5,7 +5,7 @@ except ImportError:
 
 import os
 import uuid
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, session, redirect, url_for, render_template
 from datetime import datetime, timedelta
 import requests
 import hashlib
@@ -31,6 +31,7 @@ from PIL import Image
 import io
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY') 
 CORS(app)  # This is all you need for CORS handling
 
 # Configuration
@@ -45,11 +46,11 @@ os.makedirs(os.path.join(UPLOAD_FOLDER, 'lectures'), exist_ok=True)
 
 # PostgreSQL Configuration
 DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', 'localhost'),
-    'port': int(os.environ.get('DB_PORT', 5432)),
-    'database': os.environ.get('DB_NAME', 'schedparse_db'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', 'password')
+    'host': os.environ.get('POSTGRES_HOST'),
+    'port': (os.environ.get('POSTGRES_PORT')),
+    'database': os.environ.get('POSTGRES_NAME'),
+    'user': os.environ.get('POSTGRES_USER'),
+    'password': os.environ.get('POSTGRES_PASSWORD')
 }
 
 # Create connection pool
@@ -130,6 +131,7 @@ def init_database():
                         eblan_id INTEGER PRIMARY KEY,
                         eblan_fio VARCHAR(255),
                         eblan_img VARCHAR(500),
+                        eblan_img_approved BOOLEAN DEFAULT FALSE,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -157,6 +159,7 @@ def init_database():
                         lect_string VARCHAR(100) NOT NULL,
                         image_path VARCHAR(500) NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        approved BOOLEAN DEFAULT FALSE,
                         ip_address INET,
                         FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE CASCADE
                     )
@@ -239,15 +242,15 @@ def serve_image(subfolder, filename):
     )
 
 # Configure requests to use connection pooling and retries
-session = requests.Session()
+requests_session = requests.Session()
 retry_strategy = Retry(
     total=3,
     backoff_factor=0.1,
     status_forcelist=[429, 500, 502, 503, 504],
 )
 adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retry_strategy)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
+requests_session.mount("http://", adapter)
+requests_session.mount("https://", adapter)
 
 # Configure Redis connection
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
@@ -334,9 +337,9 @@ class RedisCache:
         pass
 
 # Initialize cache instances
-schedule_cache = RedisCache(prefix="schedule", default_ttl=1800)  # 30 minutes for schedule data
-search_cache = RedisCache(prefix="search", default_ttl=600)     # 10 minutes for search results
-filter_cache = RedisCache(prefix="filter", default_ttl=1800)    # 30 minutes for filter options
+schedule_cache = RedisCache(prefix="schedule", default_ttl=43200)  # 12 hours for schedule data
+search_cache = RedisCache(prefix="search", default_ttl=1209600)     # 14 days for search results
+filter_cache = RedisCache(prefix="filter", default_ttl=43200)    # 30 minutes for filter options
 
 # NEW RATING ENDPOINTS
 
@@ -365,7 +368,7 @@ def get_eblan_rating():
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 # Get or create eblan record
-                cur.execute("SELECT eblan_fio, eblan_img FROM eblans WHERE eblan_id = %s", (eblan_id,))
+                cur.execute("SELECT eblan_fio, eblan_img FROM eblans WHERE eblan_id = %s AND approved = TRUE", (eblan_id,))
                 eblan_row = cur.fetchone()
                 
                 if not eblan_row:
@@ -557,10 +560,10 @@ def upload_eblan_img():
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO eblans (eblan_id, eblan_img, updated_at) 
-                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    INSERT INTO eblans (eblan_id, eblan_img, eblan_img_approved, updated_at) 
+                    VALUES (%s, %s, FALSE, CURRENT_TIMESTAMP)
                     ON CONFLICT (eblan_id) 
-                    DO UPDATE SET eblan_img = EXCLUDED.eblan_img, updated_at = CURRENT_TIMESTAMP
+                    DO UPDATE SET eblan_img = EXCLUDED.eblan_img, eblan_img_approved = FALSE, updated_at = CURRENT_TIMESTAMP
                 """, (eblan_id, image_path))
                 conn.commit()
 
@@ -622,8 +625,8 @@ def upload_lect_img():
                     )
 
                 cur.execute("""
-                    INSERT INTO lecture_images (eblan_id, lect_string, image_path, ip_address)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO lecture_images (eblan_id, lect_string, image_path, ip_address, approved)
+                    VALUES (%s, %s, %s, %s, FALSE)
                 """, (eblan_id_int, lect_string, image_path, client_ip))
                 conn.commit()
 
@@ -665,7 +668,7 @@ def get_lect_imgs():
                     cur.execute("""
                         SELECT image_path
                         FROM lecture_images 
-                        WHERE eblan_id = %s AND lect_string = %s
+                        WHERE eblan_id = %s AND lect_string = %s AND approved = TRUE
                         ORDER BY created_at DESC
                     """, (eblan_id_int, lect_string))
                 else:
@@ -673,7 +676,7 @@ def get_lect_imgs():
                     cur.execute("""
                         SELECT image_path
                         FROM lecture_images 
-                        WHERE lect_string = %s
+                        WHERE lect_string = %s AND approved = TRUE
                         ORDER BY created_at DESC
                     """, (lect_string,))
 
@@ -732,7 +735,7 @@ def fetch_schedule_data(start_date, end_date, group_id=None, person_id=None, lan
             url = f"https://ruz.fa.ru/api/schedule/group/154479"
             print(f"Fetching default group schedule: {url} with params {params}")
 
-        response = session.get(url, params=params)
+        response = requests_session.get(url, params=params)
         print(f"API response status: {response.status_code}, Content-Type: {response.headers.get('Content-Type')}")
         response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()
@@ -1360,6 +1363,134 @@ def batch_process(items, process_func, batch_size=100):
 # Initialize scheduler
 scheduler = BackgroundScheduler()
 scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
+
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['admin'] = True
+            return redirect(url_for('admin_dashboard'))
+        return render_template('admin/login.html', error='Wrong password')
+    return render_template('admin/login.html')
+
+def admin_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('admin'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    return render_template('admin/dashboard.html')
+
+# Комментарии
+@app.route('/admin/comments')
+@admin_required
+def admin_comments():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, eblan_id, rating, comment, features, created_at FROM eblan_comments ORDER BY created_at DESC
+            """)
+            comments = cur.fetchall()
+    return render_template('admin/comments.html', comments=comments)
+
+@app.route('/admin/comments/delete/<int:comment_id>', methods=['POST'])
+@admin_required
+def admin_delete_comment(comment_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM eblan_comments WHERE id = %s", (comment_id,))
+            conn.commit()
+    return redirect(url_for('admin_comments'))
+
+@app.route('/admin/comments/<int:comment_id>/edit', methods=['GET', 'POST'])
+def admin_edit_comment(comment_id):
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        if request.method == 'POST':
+            rating = int(request.form['rating'])
+            comment = request.form['comment']
+            features = request.form.getlist('features')
+            cur.execute(
+                "UPDATE eblan_comments SET rating=%s, comment=%s, features=%s WHERE id=%s",
+                (rating, comment, features, comment_id)
+            )
+            conn.commit()
+            return redirect(url_for('admin_comments'))
+        else:
+            cur.execute("SELECT id, eblan_id, rating, comment, features FROM eblan_comments WHERE id=%s", (comment_id,))
+            c = cur.fetchone()
+            if not c:
+                return "Комментарий не найден", 404
+            return render_template('admin/edit_comment.html', comment=c)
+
+# Модерация изображений лекций
+@app.route('/admin/lectures/images')
+@admin_required
+def admin_lecture_images():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, eblan_id, lect_string, image_path, approved, created_at FROM lecture_images ORDER BY created_at DESC
+            """)
+            images = cur.fetchall()
+    return render_template('admin/images.html', images=images, type='lecture')
+
+@app.route('/admin/lectures/images/approve/<int:image_id>', methods=['POST'])
+@admin_required
+def admin_approve_lecture_image(image_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE lecture_images SET approved = TRUE WHERE id = %s", (image_id,))
+            conn.commit()
+    return redirect(url_for('admin_lecture_images'))
+
+@app.route('/admin/lectures/images/delete/<int:image_id>', methods=['POST'])
+@admin_required
+def admin_delete_lecture_image(image_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM lecture_images WHERE id = %s", (image_id,))
+            conn.commit()
+    return redirect(url_for('admin_lecture_images'))
+
+# Модерация изображений преподов
+@app.route('/admin/eblans/images')
+@admin_required
+def admin_eblan_images():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT eblan_id, eblan_fio, eblan_img, eblan_img_approved, updated_at FROM eblans WHERE eblan_img IS NOT NULL ORDER BY updated_at DESC
+            """)
+            images = cur.fetchall()
+    return render_template('admin/images.html', images=images, type='eblan')
+
+@app.route('/admin/eblans/images/approve/<int:eblan_id>', methods=['POST'])
+@admin_required
+def admin_approve_eblan_image(eblan_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE eblans SET eblan_img_approved = TRUE WHERE eblan_id = %s", (eblan_id,))
+            conn.commit()
+    return redirect(url_for('admin_eblan_images'))
+
+@app.route('/admin/eblans/images/delete/<int:eblan_id>', methods=['POST'])
+@admin_required
+def admin_delete_eblan_image(eblan_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE eblans SET eblan_img = NULL, eblan_img_approved = FALSE WHERE eblan_id = %s", (eblan_id,))
+            conn.commit()
+    return redirect(url_for('admin_eblan_images'))
 
 if __name__ == '__main__':
     # Initialize database on startup

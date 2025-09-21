@@ -78,3 +78,5 @@ test_api.sh
 test_results/
 
 test_image_upload.sh
+
+test_images/

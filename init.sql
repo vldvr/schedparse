@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS eblans (
     eblan_id INTEGER PRIMARY KEY,
     eblan_fio VARCHAR(255),
     eblan_img VARCHAR(500),
+    eblan_img_approved BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS lecture_images (
     image_path VARCHAR(500) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ip_address INET,
+    approved BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE SET NULL
 );
 

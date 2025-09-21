@@ -12,19 +12,12 @@ services:
       - ./app.py:/app/app.py
       - ./requirements.txt:/app/requirements.txt
       - ./uploads:/app/uploads
+      - ./templates:/app/templates
     restart: unless-stopped
     depends_on:
       - redis
       - postgres
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=schedparse_db
-      - DB_USER=schedparse_user
-      - DB_PASSWORD=your_secure_password_here
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - UPLOAD_FOLDER=/app/uploads
+    env_file: .env
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/cacheStats"]
       interval: 30s
@@ -42,16 +35,17 @@ services:
     container_name: schedparse_postgres
     ports:
       - "5432:5432"
+    env_file: .env
     environment:
-      - POSTGRES_DB=schedparse_db
-      - POSTGRES_USER=schedparse_user
-      - POSTGRES_PASSWORD=your_secure_password_here
+      POSTGRES_DB: schedparse_db
+      POSTGRES_USER: schedparse_user
+      POSTGRES_PASSWORD: your_password_here
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U schedparse_user -d schedparse_db"]
+      test: ["CMD-SHELL", "pg_isready -U schedparse_user2 -d schedparse_db"]
       interval: 30s
       timeout: 10s
       retries: 5
