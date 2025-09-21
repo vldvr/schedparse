@@ -368,7 +368,7 @@ def get_eblan_rating():
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 # Get or create eblan record
-                cur.execute("SELECT eblan_fio, eblan_img FROM eblans WHERE eblan_id = %s AND approved = TRUE", (eblan_id,))
+                cur.execute("SELECT eblan_fio, eblan_img FROM eblans WHERE eblan_id = %s AND eblan_img_approved = TRUE", (eblan_id,))
                 eblan_row = cur.fetchone()
                 
                 if not eblan_row:
