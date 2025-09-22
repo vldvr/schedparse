@@ -147,7 +147,9 @@ def init_database():
                         features TEXT[], -- Array of feature strings
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         ip_address INET,
-                        FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE CASCADE
+                        reply_to_id INTEGER,
+                        FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE CASCADE,
+                        FOREIGN KEY (reply_to_id) REFERENCES eblan_comments(id) ON DELETE CASCADE
                     )
                 """)
                 
@@ -167,7 +169,12 @@ def init_database():
                 
                 # Create indexes for better performance
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_eblan_id ON eblan_comments(eblan_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_created_at ON eblan_comments(created_at DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_eblan_lect ON lecture_images(eblan_id, lect_string)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_lect_string ON lecture_images(lect_string)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_created_at ON lecture_images(created_at DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_reply_to ON eblan_comments(reply_to_id)")
+# ...existing code...
                 
                 conn.commit()
                 print("Database tables initialized successfully")
@@ -415,7 +422,7 @@ def get_eblan_rating():
 
 @app.route('/api/createEblanComment', methods=['POST'])
 def create_eblan_comment():
-    """Create a new comment for lecturer."""
+    """Create a new comment for lecturer with reply functionality."""
     try:
         if not request.is_json:
             return jsonify({"error": "Request must be JSON"}), 400
@@ -425,6 +432,7 @@ def create_eblan_comment():
         rating = data.get('rating')
         comment = data.get('comment', '')
         features = data.get('features', [])
+        reply_to_id = data.get('replyToId')  # NEW: ID комментария на который отвечаем
 
         # Validation
         if not eblan_id:
@@ -435,8 +443,10 @@ def create_eblan_comment():
         try:
             eblan_id = int(eblan_id)
             rating = int(rating)
+            if reply_to_id is not None:
+                reply_to_id = int(reply_to_id)
         except (ValueError, TypeError):
-            return jsonify({"error": "Invalid eblanId or rating format"}), 400
+            return jsonify({"error": "Invalid eblanId, rating, or replyToId format"}), 400
 
         if rating < 1 or rating > 5:
             return jsonify({"error": "Rating must be between 1 and 5"}), 400
@@ -455,17 +465,31 @@ def create_eblan_comment():
                     (eblan_id,)
                 )
                 
-                # Insert comment
-                cur.execute("""
-                    INSERT INTO eblan_comments (eblan_id, rating, comment, features, ip_address)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (eblan_id, rating, comment, features, client_ip))
+                # Validate reply_to_id if provided
+                if reply_to_id is not None:
+                    cur.execute(
+                        "SELECT id, eblan_id FROM eblan_comments WHERE id = %s",
+                        (reply_to_id,)
+                    )
+                    parent_comment = cur.fetchone()
+                    if not parent_comment:
+                        return jsonify({"error": "Parent comment not found"}), 400
+                    if parent_comment[1] != eblan_id:
+                        return jsonify({"error": "Can only reply to comments for the same eblan"}), 400
                 
+                # Insert comment with reply_to_id
+                cur.execute("""
+                    INSERT INTO eblan_comments (eblan_id, rating, comment, features, ip_address, reply_to_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (eblan_id, rating, comment, features, client_ip, reply_to_id))
+                
+                new_comment_id = cur.fetchone()[0]
                 conn.commit()
 
-                # Return all comments for this eblan
+                # Return all comments for this eblan with reply structure
                 cur.execute("""
-                    SELECT rating, comment, features
+                    SELECT id, rating, comment, features, reply_to_id, created_at
                     FROM eblan_comments 
                     WHERE eblan_id = %s
                     ORDER BY created_at DESC
@@ -474,9 +498,12 @@ def create_eblan_comment():
                 comments = []
                 for row in cur.fetchall():
                     comments.append({
-                        "rating": row[0],
-                        "comment": row[1] or "",
-                        "features": row[2] or []
+                        "id": row[0],
+                        "rating": row[1],
+                        "comment": row[2] or "",
+                        "features": row[3] or [],
+                        "replyToId": row[4],  # NEW: будет NULL если это основной комментарий
+                        "createdAt": row[5].isoformat() if row[5] else None
                     })
 
         return jsonify(comments)
@@ -487,7 +514,7 @@ def create_eblan_comment():
 
 @app.route('/api/getCommentsByEblan', methods=['GET', 'POST'])
 def get_comments_by_eblan():
-    """Get all comments for a lecturer."""
+    """Get all comments for a lecturer with reply structure."""
     try:
         if request.method == 'GET':
             eblan_id = request.args.get('eblanId')
@@ -508,7 +535,7 @@ def get_comments_by_eblan():
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT rating, comment, features
+                    SELECT id, rating, comment, features, reply_to_id, created_at
                     FROM eblan_comments 
                     WHERE eblan_id = %s
                     ORDER BY created_at DESC
@@ -517,9 +544,12 @@ def get_comments_by_eblan():
                 comments = []
                 for row in cur.fetchall():
                     comments.append({
-                        "rating": row[0],
-                        "comment": row[1] or "",
-                        "features": row[2] or []
+                        "id": row[0],
+                        "rating": row[1],
+                        "comment": row[2] or "",
+                        "features": row[3] or [],
+                        "replyToId": row[4],  # NEW: NULL для основных комментариев
+                        "createdAt": row[5].isoformat() if row[5] else None
                     })
 
         return jsonify(comments)
@@ -527,6 +557,7 @@ def get_comments_by_eblan():
     except Exception as e:
         print(f"Error in get_comments_by_eblan: {e}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/api/uploadEblanImg', methods=['POST'])
 def upload_eblan_img():
@@ -1400,7 +1431,11 @@ def admin_comments():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, eblan_id, rating, comment, features, created_at FROM eblan_comments ORDER BY created_at DESC
+                SELECT c1.id, c1.eblan_id, c1.rating, c1.comment, c1.features, c1.created_at, 
+                       c1.reply_to_id, c2.comment as parent_comment
+                FROM eblan_comments c1
+                LEFT JOIN eblan_comments c2 ON c1.reply_to_id = c2.id
+                ORDER BY c1.created_at DESC
             """)
             comments = cur.fetchall()
     return render_template('admin/comments.html', comments=comments)

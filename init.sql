@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS lecture_images (
     FOREIGN KEY (eblan_id) REFERENCES eblans(eblan_id) ON DELETE SET NULL
 );
 
+-- Добавляем поле reply_to_id в таблицу eblan_comments
+ALTER TABLE eblan_comments ADD COLUMN IF NOT EXISTS reply_to_id INTEGER;
+ALTER TABLE eblan_comments ADD CONSTRAINT fk_reply_to FOREIGN KEY (reply_to_id) REFERENCES eblan_comments(id) ON DELETE CASCADE;
+
+-- Создаем индекс для быстрого поиска ответов
+CREATE INDEX IF NOT EXISTS idx_eblan_comments_reply_to ON eblan_comments(reply_to_id);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_eblan_comments_eblan_id ON eblan_comments(eblan_id);
 CREATE INDEX IF NOT EXISTS idx_eblan_comments_created_at ON eblan_comments(created_at DESC);
