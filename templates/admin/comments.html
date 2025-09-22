@@ -62,68 +62,76 @@
         <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary mb-3">
             <i class="bi bi-arrow-left"></i> Назад
         </a>
-        <table class="table table-bordered table-striped table-hover align-middle caption-top rounded shadow-sm">
-            <caption class="mb-2"><i class="bi bi-list-ul"></i> Список комментариев</caption>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>eblan_id</th>
-                    <th>Оценка</th>
-                    <th>Комментарий</th>
-                    <th>Фичи</th>
-                    <th>Тип</th>
-                    <th>Дата</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for c in comments %}
-                <tr {% if c[6] %}class="reply-indicator"{% endif %}>
-                    <td>{{ c[0] }}</td>
-                    <td>{{ c[1] }}</td>
-                    <td>
-                        <span class="badge bg-light text-dark border border-1 border-primary">
-                            <i class="bi bi-star-fill text-warning"></i> {{ c[2] }}
-                        </span>
-                    </td>
-                    <td>
-                        {% if c[6] %}
-                            <small class="parent-comment">
-                                <i class="bi bi-arrow-return-right"></i>
-                                Ответ на: "{{ (c[7][:50] + '...') if c[7] and c[7]|length > 50 else c[7] }}"
-                            </small><br>
-                        {% endif %}
-                        {{ c[3] }}
-                    </td>
-                    <td>
-                        {% if c[4] %}
-                            {% for f in c[4] %}
-                                <span class="badge bg-info text-dark me-1">{{ f }}</span>
-                            {% endfor %}
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if c[6] %}
-                            <span class="badge bg-info text-dark"><i class="bi bi-reply"></i> Ответ</span>
-                        {% else %}
-                            <span class="badge bg-primary"><i class="bi bi-chat-left-text"></i> Основной</span>
-                        {% endif %}
-                    </td>
-                    <td class="text-muted">{{ c[5] }}</td>
-                    <td>
-                        <a href="{{ url_for('admin_edit_comment', comment_id=c[0]) }}" class="btn btn-sm btn-warning mb-1">
-                            <i class="bi bi-pencil"></i>
-                        </a>
-                        <form method="post" action="{{ url_for('admin_delete_comment', comment_id=c[0]) }}" style="display:inline;">
-                            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Удалить комментарий?{% if c[6] %} Это ответ на другой комментарий.{% endif %}')">
-                                <i class="bi bi-trash"></i>
-                            </button>
-                        </form>
-                    </td>
-                </tr>
-            {% endfor %}
-            </tbody>
-        </table>
+        <form method="post" action="{{ url_for('admin_bulk_delete_comments') }}">
+            <table class="table table-bordered table-striped table-hover align-middle caption-top rounded shadow-sm">
+                <caption class="mb-2"><i class="bi bi-list-ul"></i> Список комментариев</caption>
+                <thead>
+                    <tr>
+                        <th><input class="form-check-input" type="checkbox" id="selectAll"></th>
+                        <th>ID</th>
+                        <th>eblan_id</th>
+                        <th>Оценка</th>
+                        <th>Комментарий</th>
+                        <th>Фичи</th>
+                        <th>Тип</th>
+                        <th>Дата</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for c in comments %}
+                    <tr {% if c[6] %}class="reply-indicator"{% endif %}>
+                        <td><input class="form-check-input" type="checkbox" name="comment_ids" value="{{ c[0] }}"></td>
+                        <td>{{ c[0] }}</td>
+                        <td>{{ c[1] }}</td>
+                        <td>
+                            <span class="badge bg-light text-dark border border-1 border-primary">
+                                <i class="bi bi-star-fill text-warning"></i> {{ c[2] }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if c[6] %}
+                                <small class="parent-comment">
+                                    <i class="bi bi-arrow-return-right"></i>
+                                    Ответ на: "{{ (c[7][:50] + '...') if c[7] and c[7]|length > 50 else c[7] }}"
+                                </small><br>
+                            {% endif %}
+                            {{ c[3] }}
+                        </td>
+                        <td>
+                            {% if c[4] %}
+                                {% for f in c[4] %}
+                                    <span class="badge bg-info text-dark me-1">{{ f }}</span>
+                                {% endfor %}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if c[6] %}
+                                <span class="badge bg-info text-dark"><i class="bi bi-reply"></i> Ответ</span>
+                            {% else %}
+                                <span class="badge bg-primary"><i class="bi bi-chat-left-text"></i> Основной</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted">{{ c[5] }}</td>
+                        <td>
+                            <a href="{{ url_for('admin_edit_comment', comment_id=c[0]) }}" class="btn btn-sm btn-warning mb-1">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <form method="post" action="{{ url_for('admin_delete_comment', comment_id=c[0]) }}" style="display:inline;">
+                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Удалить комментарий?{% if c[6] %} Это ответ на другой комментарий.{% endif %}')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <button type="submit" class="btn btn-danger" onclick="return confirm('Вы уверены, что хотите удалить выбранные комментарии?')">
+                <i class="bi bi-trash"></i> Удалить выбранные
+            </button>
+        </form>
+
         <div class="alert alert-info mt-4 shadow-sm border-info">
             <h5><i class="bi bi-info-circle"></i> Как работают ответы:</h5>
             <ul class="mb-1">
@@ -135,5 +143,14 @@
         </div>
     </div>
 </div>
+
+<script>
+document.getElementById('selectAll').addEventListener('click', function(event) {
+    const checkboxes = document.querySelectorAll('input[name="comment_ids"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = event.target.checked;
+    });
+});
+</script>
 </body>
 </html>

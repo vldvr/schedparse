@@ -1449,6 +1449,20 @@ def admin_delete_comment(comment_id):
             conn.commit()
     return redirect(url_for('admin_comments'))
 
+@app.route('/admin/comments/bulk_delete', methods=['POST'])
+@admin_required
+def admin_bulk_delete_comments():
+    comment_ids = request.form.getlist('comment_ids')
+    if comment_ids:
+        # Convert ids to integers for safety
+        comment_ids_int = [int(id) for id in comment_ids]
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Use ANY for efficient bulk deletion
+                cur.execute("DELETE FROM eblan_comments WHERE id = ANY(%s::int[])", (comment_ids_int,))
+                conn.commit()
+    return redirect(url_for('admin_comments'))
+
 @app.route('/admin/comments/<int:comment_id>/edit', methods=['GET', 'POST'])
 def admin_edit_comment(comment_id):
     if not session.get('admin'):
@@ -1502,6 +1516,23 @@ def admin_delete_lecture_image(image_id):
             conn.commit()
     return redirect(url_for('admin_lecture_images'))
 
+@app.route('/admin/lectures/images/bulk_action', methods=['POST'])
+@admin_required
+def admin_bulk_action_lecture_images():
+    image_ids = request.form.getlist('image_ids')
+    action = request.form.get('action')
+
+    if image_ids and action in ['approve', 'delete']:
+        image_ids_int = [int(id) for id in image_ids]
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if action == 'approve':
+                    cur.execute("UPDATE lecture_images SET approved = TRUE WHERE id = ANY(%s::int[])", (image_ids_int,))
+                elif action == 'delete':
+                    cur.execute("DELETE FROM lecture_images WHERE id = ANY(%s::int[])", (image_ids_int,))
+                conn.commit()
+    return redirect(url_for('admin_lecture_images'))
+
 # Модерация изображений преподов
 @app.route('/admin/eblans/images')
 @admin_required
@@ -1530,6 +1561,24 @@ def admin_delete_eblan_image(eblan_id):
         with conn.cursor() as cur:
             cur.execute("UPDATE eblans SET eblan_img = NULL, eblan_img_approved = FALSE WHERE eblan_id = %s", (eblan_id,))
             conn.commit()
+    return redirect(url_for('admin_eblan_images'))
+
+@app.route('/admin/eblans/images/bulk_action', methods=['POST'])
+@admin_required
+def admin_bulk_action_eblan_images():
+    eblan_ids = request.form.getlist('image_ids') # The name in the form is 'image_ids'
+    action = request.form.get('action')
+
+    if eblan_ids and action in ['approve', 'delete']:
+        eblan_ids_int = [int(id) for id in eblan_ids]
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if action == 'approve':
+                    cur.execute("UPDATE eblans SET eblan_img_approved = TRUE WHERE eblan_id = ANY(%s::int[])", (eblan_ids_int,))
+                elif action == 'delete':
+                    # This is a soft delete of the image, not the eblan record
+                    cur.execute("UPDATE eblans SET eblan_img = NULL, eblan_img_approved = FALSE WHERE eblan_id = ANY(%s::int[])", (eblan_ids_int,))
+                conn.commit()
     return redirect(url_for('admin_eblan_images'))
 
 if __name__ == '__main__':
