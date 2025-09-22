@@ -2,143 +2,172 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Комментарии</title>
+    <title>Управление комментариями</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
     <style>
+        :root {
+            --primary-color: #0d6efd;
+            --light-gray: #f8f9fa;
+            --medium-gray: #e9ecef;
+            --card-shadow: 0 8px 30px rgba(0, 0, 0, 0.05);
+            --card-radius: 1rem;
+        }
         body {
-            background: #f4f6fa;
+            font-family: 'Inter', sans-serif;
+            background-color: var(--light-gray);
         }
         .main-card {
             background: #fff;
-            border-radius: 18px;
-            box-shadow: 0 4px 24px 0 rgba(60,72,88,.08);
-            padding: 2.5rem 2rem;
+            border-radius: var(--card-radius);
+            box-shadow: var(--card-shadow);
+            padding: 2.5rem;
+            margin-top: 3rem;
+            margin-bottom: 3rem;
+            border: 1px solid var(--medium-gray);
         }
-        .reply-indicator {
-            padding-left: 24px;
-            border-left: 4px solid #0d6efd;
-            background-color: #f8fafd;
+        .page-header {
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--medium-gray);
         }
-        .parent-comment {
-            font-size: 0.85em;
-            color: #6c757d;
-            font-style: italic;
+        .page-header h2 {
+            font-weight: 700;
+        }
+        .table {
+            border-collapse: separate;
+            border-spacing: 0 0.5rem;
+        }
+        .table th, .table td {
+            vertical-align: middle;
+            padding: 1rem 1.25rem;
         }
         .table thead th {
-            background: #f1f3f7;
-            border-top: none;
+            background-color: var(--light-gray);
+            border: none;
+            font-weight: 500;
+            color: #495057;
+        }
+        .table tbody tr {
+            background-color: #fff;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            border-radius: 0.5rem;
+            transition: all 0.2s ease;
         }
         .table-hover tbody tr:hover {
-            background-color: #eaf3ff;
-            transition: background 0.2s;
+            transform: translateY(-3px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.06);
         }
-        .badge.bg-primary, .badge.bg-info {
-            font-size: 0.95em;
-            padding: 0.5em 0.8em;
-            border-radius: 0.7em;
+        .reply-indicator {
+            border-left: 5px solid var(--primary-color);
         }
-        .alert-info {
-            background: #eaf6ff;
-            border-color: #b6e0fe;
-        }
-        .btn {
-            transition: box-shadow 0.2s;
-        }
-        .btn:focus, .btn:hover {
-            box-shadow: 0 0 0 0.15rem #0d6efd40;
-        }
-        .caption-top {
+        .parent-comment {
+            font-size: 0.9em;
             color: #6c757d;
-            font-size: 1.05em;
-            margin-bottom: 0.5rem;
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .info-box {
+            background-color: #e7f3ff;
+            border: 1px solid #cce3ff;
+            border-radius: 0.75rem;
+        }
+        .form-check-input {
+            width: 1.2em;
+            height: 1.2em;
         }
     </style>
 </head>
 <body>
-<div class="container mt-5">
+<div class="container">
     <div class="main-card">
-        <h2 class="mb-4 border-bottom pb-2"><i class="bi bi-chat-left-text text-primary"></i> Комментарии</h2>
-        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary mb-3">
-            <i class="bi bi-arrow-left"></i> Назад
-        </a>
+        <div class="page-header d-flex justify-content-between align-items-center">
+            <h2 class="mb-0"><i class="bi bi-chat-left-text-fill text-primary"></i> Управление комментариями</h2>
+            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Назад
+            </a>
+        </div>
+        
         <form method="post" action="{{ url_for('admin_bulk_delete_comments') }}">
-            <table class="table table-bordered table-striped table-hover align-middle caption-top rounded shadow-sm">
-                <caption class="mb-2"><i class="bi bi-list-ul"></i> Список комментариев</caption>
-                <thead>
-                    <tr>
-                        <th><input class="form-check-input" type="checkbox" id="selectAll"></th>
-                        <th>ID</th>
-                        <th>eblan_id</th>
-                        <th>Оценка</th>
-                        <th>Комментарий</th>
-                        <th>Фичи</th>
-                        <th>Тип</th>
-                        <th>Дата</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                {% for c in comments %}
-                    <tr {% if c[6] %}class="reply-indicator"{% endif %}>
-                        <td><input class="form-check-input" type="checkbox" name="comment_ids" value="{{ c[0] }}"></td>
-                        <td>{{ c[0] }}</td>
-                        <td>{{ c[1] }}</td>
-                        <td>
-                            <span class="badge bg-light text-dark border border-1 border-primary">
-                                <i class="bi bi-star-fill text-warning"></i> {{ c[2] }}
-                            </span>
-                        </td>
-                        <td>
-                            {% if c[6] %}
-                                <small class="parent-comment">
-                                    <i class="bi bi-arrow-return-right"></i>
-                                    Ответ на: "{{ (c[7][:50] + '...') if c[7] and c[7]|length > 50 else c[7] }}"
-                                </small><br>
-                            {% endif %}
-                            {{ c[3] }}
-                        </td>
-                        <td>
-                            {% if c[4] %}
-                                {% for f in c[4] %}
-                                    <span class="badge bg-info text-dark me-1">{{ f }}</span>
-                                {% endfor %}
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if c[6] %}
-                                <span class="badge bg-info text-dark"><i class="bi bi-reply"></i> Ответ</span>
-                            {% else %}
-                                <span class="badge bg-primary"><i class="bi bi-chat-left-text"></i> Основной</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-muted">{{ c[5] }}</td>
-                        <td>
-                            <a href="{{ url_for('admin_edit_comment', comment_id=c[0]) }}" class="btn btn-sm btn-warning mb-1">
-                                <i class="bi bi-pencil"></i>
-                            </a>
-                            <form method="post" action="{{ url_for('admin_delete_comment', comment_id=c[0]) }}" style="display:inline;">
-                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Удалить комментарий?{% if c[6] %} Это ответ на другой комментарий.{% endif %}')">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                            </form>
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-            <button type="submit" class="btn btn-danger" onclick="return confirm('Вы уверены, что хотите удалить выбранные комментарии?')">
+            <div class="table-responsive">
+                <table class="table table-borderless table-hover">
+                    <thead>
+                        <tr>
+                            <th><input class="form-check-input" type="checkbox" id="selectAll"></th>
+                            <th>ID</th>
+                            <th>Комментарий</th>
+                            <th>Оценка</th>
+                            <th>Тип</th>
+                            <th>Дата</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for c in comments %}
+                        <tr {% if c[6] %}class="reply-indicator"{% endif %}>
+                            <td><input class="form-check-input" type="checkbox" name="comment_ids" value="{{ c[0] }}"></td>
+                            <td><span class="badge bg-light text-dark">#{{ c[0] }}</span></td>
+                            <td>
+                                {% if c[6] %}
+                                    <small class="parent-comment">
+                                        <i class="bi bi-reply-fill"></i>
+                                        Ответ на: "{{ (c[7][:50] + '...') if c[7] and c[7]|length > 50 else c[7] }}"
+                                    </small>
+                                {% endif %}
+                                {{ c[3] }}
+                                {% if c[4] %}
+                                    <div class="mt-2">
+                                    {% for f in c[4] %}
+                                        <span class="badge fw-normal bg-secondary bg-opacity-10 text-secondary-emphasis me-1">{{ f }}</span>
+                                    {% endfor %}
+                                    </div>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="badge bg-warning bg-opacity-25 text-warning-emphasis border border-warning-subtle">
+                                    <i class="bi bi-star-fill"></i> {{ c[2] }}
+                                </span>
+                            </td>
+                            <td>
+                                {% if c[6] %}
+                                    <span class="badge fw-normal bg-info bg-opacity-25 text-info-emphasis"><i class="bi bi-reply"></i> Ответ</span>
+                                {% else %}
+                                    <span class="badge fw-normal bg-primary bg-opacity-25 text-primary-emphasis"><i class="bi bi-chat-left-text"></i> Основной</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-muted">{{ c[5].strftime('%d.%m.%Y %H:%M') }}</td>
+                            <td>
+                                <div class="actions">
+                                    <a href="{{ url_for('admin_edit_comment', comment_id=c[0]) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil-fill"></i></a>
+                                    <form method="post" action="{{ url_for('admin_delete_comment', comment_id=c[0]) }}" style="display:inline;">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить комментарий?')">
+                                            <i class="bi bi-trash-fill"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <button type="submit" class="btn btn-danger mt-3" onclick="return confirm('Вы уверены, что хотите удалить выбранные комментарии?')">
                 <i class="bi bi-trash"></i> Удалить выбранные
             </button>
         </form>
 
-        <div class="alert alert-info mt-4 shadow-sm border-info">
-            <h5><i class="bi bi-info-circle"></i> Как работают ответы:</h5>
-            <ul class="mb-1">
-                <li><strong>Основной комментарий</strong> — обычный комментарий с оценкой</li>
-                <li><strong>Ответ</strong> — комментарий, который является ответом на другой комментарий</li>
-                <li>В API нужно передавать <code>replyToId</code> для создания ответа</li>
-                <li>Ответы выделены синей полосой слева и содержат ссылку на родительский комментарий</li>
+        <div class="info-box mt-4 p-4">
+            <h5 class="mb-3"><i class="bi bi-info-circle-fill me-2"></i> Как работают ответы:</h5>
+            <ul class="mb-0">
+                <li>Ответы на комментарии выделены синей полосой слева.</li>
+                <li>Они привязаны к основному комментарию через `replyToId` и будут удалены вместе с ним.</li>
             </ul>
         </div>
     </div>
