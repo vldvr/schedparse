@@ -70,23 +70,29 @@
     </div>
 
     <div class="row g-4">
-        <div class="col-md-4">
+        <div class="col-md-3">
             <a href="{{ url_for('admin_comments') }}" class="nav-card">
                 <i class="icon bi bi-chat-left-text-fill"></i>
                 <h4>Комментарии</h4>
             </a>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <a href="{{ url_for('admin_lecture_images') }}" class="nav-card">
                 <i class="icon bi bi-images"></i>
                 <h4>Изображения лекций</h4>
             </a>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <a href="{{ url_for('admin_eblan_images') }}" class="nav-card">
                 <i class="icon bi bi-person-bounding-box"></i>
                 <h4>Изображения преподавателей</h4>
             </a>
+        </div>
+        <div class="col-md-3">
+        <a href="{{ url_for('admin_backup') }}" class="nav-card">
+            <i class="icon bi bi-shield-check"></i>
+            <h4>Резервные копии</h4>
+        </a>
         </div>
     </div>
 </div>

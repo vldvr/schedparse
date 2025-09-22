@@ -4,6 +4,8 @@ except ImportError:
     import json
 
 import os
+import tempfile
+from backup_manager import BackupManager
 import uuid
 from flask import Flask, request, jsonify, send_from_directory, session, redirect, url_for, render_template
 from datetime import datetime, timedelta
@@ -1400,6 +1402,26 @@ def batch_process(items, process_func, batch_size=100):
 scheduler = BackgroundScheduler()
 scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
 
+# Initialize backup manager
+backup_manager = BackupManager(DB_CONFIG, UPLOAD_FOLDER)
+
+def create_automatic_backup():
+    """Создание автоматического бэкапа"""
+    try:
+        # Используем системный пароль для автоматических бэкапов
+        auto_backup_password = os.environ.get('AUTO_BACKUP_PASSWORD', 'default_auto_backup_password_change_this')
+        backup_path = backup_manager.create_backup(auto_backup_password)
+        print(f"Автоматический бэкап создан: {backup_path}")
+        
+        # Удаляем старые бэкапы, оставляя последние 10
+        backup_manager.delete_old_backups(keep_count=10)
+    except Exception as e:
+        print(f"Ошибка создания автоматического бэкапа: {e}")
+
+# Добавляем задачу создания бэкапов каждую неделю (воскресенье в 3:00)
+scheduler.add_job(create_automatic_backup, 'cron', day_of_week=6, hour=3, minute=0)
+
+
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
 
 @app.route('/admin/login', methods=['GET', 'POST'])
@@ -1580,6 +1602,107 @@ def admin_bulk_action_eblan_images():
                     cur.execute("UPDATE eblans SET eblan_img = NULL, eblan_img_approved = FALSE WHERE eblan_id = ANY(%s::int[])", (eblan_ids_int,))
                 conn.commit()
     return redirect(url_for('admin_eblan_images'))
+
+# BACKUP MANAGEMENT ENDPOINTS
+
+@app.route('/admin/backup')
+@admin_required
+def admin_backup():
+    """Страница управления бэкапами"""
+    backups = backup_manager.get_backup_list()
+    return render_template('admin/backup.html', backups=backups)
+
+@app.route('/admin/backup/create', methods=['POST'])
+@admin_required
+def admin_create_backup():
+    """Создание ручного бэкапа"""
+    try:
+        password = request.form.get('backup_password')
+        if not password or len(password) < 8:
+            return jsonify({'success': False, 'error': 'Пароль должен содержать минимум 8 символов'})
+        
+        backup_path = backup_manager.create_backup(password)
+        filename = os.path.basename(backup_path)
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Бэкап успешно создан: {filename}',
+            'filename': filename
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/backup/download/<filename>')
+@admin_required
+def admin_download_backup(filename):
+    """Скачивание бэкапа"""
+    backup_path = os.path.join(backup_manager.backup_folder, filename)
+    if not os.path.exists(backup_path) or not filename.endswith('.encrypted'):
+        return "Файл не найден", 404
+    
+    return send_from_directory(
+        backup_manager.backup_folder,
+        filename,
+        as_attachment=True,
+        download_name=filename
+    )
+
+@app.route('/admin/backup/restore', methods=['POST'])
+@admin_required
+def admin_restore_backup():
+    """Восстановление из бэкапа"""
+    try:
+        if 'backup_file' not in request.files:
+            return jsonify({'success': False, 'error': 'Файл не выбран'})
+        
+        file = request.files['backup_file']
+        password = request.form.get('restore_password')
+        
+        if not password:
+            return jsonify({'success': False, 'error': 'Введите пароль для расшифровки'})
+        
+        if file.filename == '' or not file.filename.endswith('.encrypted'):
+            return jsonify({'success': False, 'error': 'Выберите корректный файл бэкапа (.encrypted)'})
+        
+        # Сохраняем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.encrypted') as temp_file:
+            file.save(temp_file.name)
+            temp_path = temp_file.name
+        
+        try:
+            # Восстанавливаем из бэкапа
+            success = backup_manager.restore_backup(temp_path, password)
+            
+            if success:
+                return jsonify({
+                    'success': True, 
+                    'message': 'Бэкап успешно восстановлен! Перезапустите приложение для применения изменений.'
+                })
+            else:
+                return jsonify({
+                    'success': False, 
+                    'error': 'Ошибка восстановления. Проверьте пароль и корректность файла.'
+                })
+        finally:
+            # Удаляем временный файл
+            os.unlink(temp_path)
+            
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/backup/delete/<filename>', methods=['POST'])
+@admin_required
+def admin_delete_backup(filename):
+    """Удаление бэкапа"""
+    try:
+        backup_path = os.path.join(backup_manager.backup_folder, filename)
+        if os.path.exists(backup_path) and filename.endswith('.encrypted'):
+            os.remove(backup_path)
+            return jsonify({'success': True, 'message': 'Бэкап удален'})
+        else:
+            return jsonify({'success': False, 'error': 'Файл не найден'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 if __name__ == '__main__':
     # Initialize database on startup

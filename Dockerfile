@@ -15,9 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py .
+COPY backup_manager.py .
 
 # Create uploads directory
-RUN mkdir -p uploads/eblans uploads/lectures
+RUN mkdir -p uploads/eblans uploads/lectures backups
 
 # Expose the port the app runs on
 EXPOSE 5000
