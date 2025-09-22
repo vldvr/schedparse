@@ -60,3 +60,23 @@ secrets.json
 
 # Local development settings
 local_settings.py
+
+# Uploads directory (images uploaded by users)
+uploads/
+!uploads/.gitkeep
+
+# Database backups
+*.sql.backup
+*.dump
+
+# Docker volumes data
+postgres-data/
+redis-data/
+
+test_api.sh
+
+test_results/
+
+test_image_upload.sh
+
+test_images/
