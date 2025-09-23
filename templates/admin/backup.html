@@ -75,6 +75,7 @@
         .backup-actions {
             display: flex;
             gap: 0.5rem;
+            flex-wrap: wrap;
         }
         .security-warning {
             background: linear-gradient(135deg, #fff3cd, #ffeaa7);
@@ -101,33 +102,100 @@
         .alert-container {
             margin-top: 1rem;
         }
+        .backup-type {
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .backup-auto {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .backup-manual {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .nas-status {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .nas-enabled {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .nas-disabled {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .nas-info-card {
+            background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+            border: 1px solid #2196f3;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="main-card">
         <div class="page-header d-flex justify-content-between align-items-center">
-            <h2 class="mb-0">
-                <i class="bi bi-shield-check text-primary"></i> 
-                Управление резервными копиями
-            </h2>
+            <div>
+                <h2 class="mb-1">
+                    <i class="bi bi-shield-check text-primary"></i> 
+                    Управление резервными копиями
+                </h2>
+                <div class="nas-status {{ 'nas-enabled' if nas_config.get('enabled') else 'nas-disabled' }}">
+                    <i class="bi bi-{{ 'wifi' if nas_config.get('enabled') else 'wifi-off' }}"></i>
+                    NAS: {{ 'Включен' if nas_config.get('enabled') else 'Отключен' }}
+                </div>
+            </div>
             <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Назад
             </a>
         </div>
+
+        <!-- NAS Information Card -->
+        {% if nas_config.get('enabled') %}
+        <div class="nas-info-card">
+            <h5><i class="bi bi-cloud-upload text-primary me-2"></i>NAS Подключение</h5>
+            <div class="row">
+                <div class="col-md-6">
+                    <p class="mb-1"><strong>Хост:</strong> {{ nas_config.get('host', 'Не указан') }}</p>
+                    <p class="mb-1"><strong>Шара:</strong> {{ nas_config.get('share', 'Не указана') }}</p>
+                </div>
+                <div class="col-md-6">
+                    <p class="mb-1"><strong>Путь:</strong> {{ nas_config.get('path', 'Не указан') }}</p>
+                    <p class="mb-1"><strong>Автозагрузка:</strong> Включена для месячных бэкапов</p>
+                </div>
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" onclick="testNasConnection()">
+                <i class="bi bi-wifi me-1"></i>Тест подключения
+            </button>
+        </div>
+        {% endif %}
 
         <div class="security-warning">
             <h5><i class="bi bi-exclamation-triangle-fill me-2"></i>Важная информация о безопасности</h5>
             <ul>
                 <li><strong>Бэкапы зашифрованы</strong> - используйте надежные пароли длиной не менее 12 символов</li>
                 <li><strong>Сохраняйте пароли отдельно</strong> - без пароля восстановить данные невозможно</li>
-                <li><strong>Автоматические бэкапы</strong> создаются каждое воскресенье в 3:00 утра</li>
+                <li><strong>Автоматические бэкапы</strong> создаются 1-го числа каждого месяца в 3:00 утра</li>
                 <li><strong>Восстановление</strong> полностью заменяет текущие данные</li>
+                {% if nas_config.get('enabled') %}
+                <li><strong>NAS бэкапы</strong> - месячные бэкапы автоматически загружаются на NAS (хранится 12 последних)</li>
+                {% endif %}
             </ul>
         </div>
 
         <div class="row g-4 mb-4">
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <div class="action-card h-100">
                     <h5 class="mb-3"><i class="bi bi-plus-circle text-success"></i> Создать бэкап</h5>
                     <p class="text-muted mb-3">Создать зашифрованную резервную копию всех данных и изображений</p>
@@ -136,12 +204,21 @@
                     </button>
                 </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <div class="action-card h-100">
                     <h5 class="mb-3"><i class="bi bi-upload text-primary"></i> Восстановить бэкап</h5>
                     <p class="text-muted mb-3">Загрузить и восстановить данные из зашифрованного бэкапа</p>
                     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#restoreBackupModal">
                         <i class="bi bi-upload"></i> Восстановить
+                    </button>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="action-card h-100">
+                    <h5 class="mb-3"><i class="bi bi-calendar-check text-warning"></i> Месячный бэкап</h5>
+                    <p class="text-muted mb-3">Принудительно создать месячный бэкап и отправить на NAS</p>
+                    <button class="btn btn-warning" onclick="forceMonthlyBackup()">
+                        <i class="bi bi-cloud-arrow-up"></i> Месячный бэкап
                     </button>
                 </div>
             </div>
@@ -153,7 +230,12 @@
                 {% for backup in backups %}
                 <div class="backup-item">
                     <div class="backup-info">
-                        <h6>{{ backup.filename }}</h6>
+                        <h6>
+                            {{ backup.filename }}
+                            <span class="backup-type backup-{{ backup.get('backup_type', 'manual') }}">
+                                {{ 'авто' if backup.get('backup_type') == 'auto' else 'ручной' }}
+                            </span>
+                        </h6>
                         <div class="text-muted">
                             <i class="bi bi-calendar3 me-1"></i>{{ backup.created_at.strftime('%d.%m.%Y %H:%M') }}
                             <span class="ms-3">
@@ -166,6 +248,12 @@
                            class="btn btn-sm btn-outline-primary" title="Скачать">
                             <i class="bi bi-download"></i>
                         </a>
+                        {% if nas_config.get('enabled') %}
+                        <button class="btn btn-sm btn-outline-success" 
+                                onclick="uploadToNas('{{ backup.filename }}')" title="Загрузить на NAS">
+                            <i class="bi bi-cloud-upload"></i>
+                        </button>
+                        {% endif %}
                         <button class="btn btn-sm btn-outline-danger" 
                                 onclick="deleteBackup('{{ backup.filename }}')" title="Удалить">
                             <i class="bi bi-trash"></i>
@@ -182,9 +270,37 @@
                 </div>
             {% endif %}
         </div>
+
+        <!-- Schedule Information -->
+        <div class="action-card mt-4">
+            <h5><i class="bi bi-info-circle text-info me-2"></i>Информация о расписании</h5>
+            <div class="row">
+                <div class="col-md-6">
+                    <ul class="list-unstyled mb-0">
+                        <li><strong>Автоматические бэкапы:</strong> 1-го числа каждого месяца в 3:00</li>
+                        <li><strong>Локальное хранение:</strong> 3 автоматических + 5 ручных</li>
+                        <li><strong>Шифрование:</strong> AES-256 с PBKDF2 (100,000 итераций)</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    {% if nas_config.get('enabled') %}
+                    <ul class="list-unstyled mb-0">
+                        <li><strong>NAS хранение:</strong> 12 последних месячных бэкапов</li>
+                        <li><strong>Автозагрузка:</strong> Только для месячных бэкапов</li>
+                        <li><strong>Протокол:</strong> CIFS/SMB</li>
+                    </ul>
+                    {% else %}
+                    <div class="text-muted">
+                        <em>NAS отключен. Для включения добавьте настройки в .env файл.</em>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
+<!-- Create Backup Modal -->
 <div class="modal fade" id="createBackupModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -225,6 +341,7 @@
     </div>
 </div>
 
+<!-- Restore Backup Modal -->
 <div class="modal fade" id="restoreBackupModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -271,16 +388,49 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// Создание бэкапа
+// Utility function to show messages
+function showMessage(message, type = 'success') {
+    // Create toast notification
+    const toastContainer = document.getElementById('toast-container') || createToastContainer();
+    const toast = document.createElement('div');
+    toast.className = `toast align-items-center text-bg-${type === 'danger' ? 'danger' : type === 'success' ? 'success' : 'info'} border-0`;
+    toast.setAttribute('role', 'alert');
+    toast.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body">${message}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    `;
+    
+    toastContainer.appendChild(toast);
+    const bsToast = new bootstrap.Toast(toast);
+    bsToast.show();
+    
+    // Remove toast after it's hidden
+    toast.addEventListener('hidden.bs.toast', () => {
+        toast.remove();
+    });
+}
+
+function createToastContainer() {
+    const container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'toast-container position-fixed top-0 end-0 p-3';
+    container.style.zIndex = '1055';
+    document.body.appendChild(container);
+    return container;
+}
+
+// Create backup
 document.getElementById('createBackupBtn').addEventListener('click', function() {
     const password = document.getElementById('backup_password').value;
     const confirmPassword = document.getElementById('backup_password_confirm').value;
     const alertContainer = document.querySelector('#createBackupModal .alert-container');
     
-    // Очистка предыдущих сообщений
+    // Clear previous messages
     alertContainer.innerHTML = '';
     
-    // Валидация паролей
+    // Validate passwords
     if (password !== confirmPassword) {
         alertContainer.innerHTML = '<div class="alert alert-danger">Пароли не совпадают</div>';
         return;
@@ -291,11 +441,11 @@ document.getElementById('createBackupBtn').addEventListener('click', function() 
         return;
     }
     
-    // Показать прогресс-бар
+    // Show progress
     document.querySelector('#createBackupModal .progress-container').style.display = 'block';
     document.getElementById('createBackupBtn').disabled = true;
     
-    // Анимация прогресса
+    // Progress animation
     let progress = 0;
     const progressBar = document.querySelector('#createBackupModal .progress-bar');
     const progressInterval = setInterval(() => {
@@ -304,7 +454,7 @@ document.getElementById('createBackupBtn').addEventListener('click', function() 
         progressBar.style.width = progress + '%';
     }, 500);
     
-    // Отправка запроса
+    // Send request
     const formData = new FormData();
     formData.append('backup_password', password);
     
@@ -319,6 +469,7 @@ document.getElementById('createBackupBtn').addEventListener('click', function() 
         
         if (data.success) {
             alertContainer.innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+            showMessage('Бэкап успешно создан!', 'success');
             setTimeout(() => {
                 location.reload();
             }, 2000);
@@ -339,13 +490,12 @@ document.getElementById('createBackupBtn').addEventListener('click', function() 
     });
 });
 
-// Восстановление бэкапа
+// Restore backup
 document.getElementById('restoreBackupBtn').addEventListener('click', function() {
     const fileInput = document.getElementById('backup_file');
     const password = document.getElementById('restore_password').value;
     const alertContainer = document.querySelector('#restoreBackupModal .alert-container');
     
-    // Очистка предыдущих сообщений
     alertContainer.innerHTML = '';
     
     if (!fileInput.files[0]) {
@@ -358,11 +508,15 @@ document.getElementById('restoreBackupBtn').addEventListener('click', function()
         return;
     }
     
-    // Показать прогресс-бар
+    if (!confirm('Вы действительно хотите восстановить данные из бэкапа? Все текущие данные будут заменены!')) {
+        return;
+    }
+    
+    // Show progress
     document.querySelector('#restoreBackupModal .progress-container').style.display = 'block';
     document.getElementById('restoreBackupBtn').disabled = true;
     
-    // Анимация прогресса
+    // Progress animation
     let progress = 0;
     const progressBar = document.querySelector('#restoreBackupModal .progress-bar');
     const progressInterval = setInterval(() => {
@@ -371,7 +525,7 @@ document.getElementById('restoreBackupBtn').addEventListener('click', function()
         progressBar.style.width = progress + '%';
     }, 800);
     
-    // Отправка запроса
+    // Send request
     const formData = new FormData();
     formData.append('backup_file', fileInput.files[0]);
     formData.append('restore_password', password);
@@ -387,6 +541,7 @@ document.getElementById('restoreBackupBtn').addEventListener('click', function()
         
         if (data.success) {
             alertContainer.innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+            showMessage('Бэкап успешно восстановлен!', 'success');
         } else {
             alertContainer.innerHTML = `<div class="alert alert-danger">Ошибка: ${data.error}</div>`;
         }
@@ -404,39 +559,135 @@ document.getElementById('restoreBackupBtn').addEventListener('click', function()
     });
 });
 
-// Удаление бэкапа
-function deleteBackup(filename) {
-    if (!confirm('Вы уверены, что хотите удалить этот бэкап?')) {
-        return;
-    }
+// Test NAS connection
+async function testNasConnection() {
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="spinner-border spinner-border-sm me-1"></i>Тестирование...';
     
-    fetch(`/admin/backup/delete/${filename}`, {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            location.reload();
+    try {
+        const response = await fetch('/admin/backup/test_nas', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showMessage(result.message, 'success');
         } else {
-            alert('Ошибка: ' + data.error);
+            showMessage('Ошибка подключения к NAS: ' + result.error, 'danger');
         }
-    })
-    .catch(error => {
-        alert('Произошла ошибка при удалении бэкапа');
-    });
+    } catch (error) {
+        showMessage('Ошибка: ' + error.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
 }
 
-// Сброс форм при закрытии модальных окон
+// Upload to NAS
+async function uploadToNas(filename) {
+    if (!confirm('Загрузить бэкап ' + filename + ' на NAS?')) return;
+    
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="spinner-border spinner-border-sm"></i>';
+    
+    try {
+        const response = await fetch('/admin/backup/manual_nas_upload/' + filename, {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showMessage(result.message, 'success');
+        } else {
+            showMessage('Ошибка загрузки на NAS: ' + result.error, 'danger');
+        }
+    } catch (error) {
+        showMessage('Ошибка: ' + error.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Delete backup
+async function deleteBackup(filename) {
+    if (!confirm('Вы уверены, что хотите удалить бэкап ' + filename + '?')) return;
+    
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="spinner-border spinner-border-sm"></i>';
+    
+    try {
+        const response = await fetch('/admin/backup/delete/' + filename, {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showMessage('Бэкап удален: ' + filename, 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showMessage('Ошибка удаления: ' + result.error, 'danger');
+        }
+    } catch (error) {
+        showMessage('Ошибка: ' + error.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Force monthly backup
+async function forceMonthlyBackup() {
+    if (!confirm('Создать принудительный месячный бэкап? Он будет отправлен на NAS, если он настроен.')) return;
+    
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="spinner-border spinner-border-sm me-1"></i>Создание...';
+    
+    try {
+        const response = await fetch('/admin/backup/force_monthly', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showMessage(result.message, 'success');
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            showMessage('Ошибка: ' + result.error, 'danger');
+        }
+    } catch (error) {
+        showMessage('Ошибка: ' + error.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Reset forms when modals are closed
 document.getElementById('createBackupModal').addEventListener('hidden.bs.modal', function() {
     document.getElementById('createBackupForm').reset();
     document.querySelector('#createBackupModal .alert-container').innerHTML = '';
     document.querySelector('#createBackupModal .progress-container').style.display = 'none';
+    document.querySelector('#createBackupModal .progress-bar').style.width = '0%';
 });
 
 document.getElementById('restoreBackupModal').addEventListener('hidden.bs.modal', function() {
     document.getElementById('restoreBackupForm').reset();
     document.querySelector('#restoreBackupModal .alert-container').innerHTML = '';
     document.querySelector('#restoreBackupModal .progress-container').style.display = 'none';
+    document.querySelector('#restoreBackupModal .progress-bar').style.width = '0%';
 });
 </script>
 </body>

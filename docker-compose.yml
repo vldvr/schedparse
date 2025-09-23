@@ -20,15 +20,22 @@ services:
       - redis
       - postgres
     env_file: .env
+    # Добавляем привилегии для монтирования NAS через CIFS
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/cacheStats"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-    # Install curl and dependencies for healthcheck
+    # Устанавливаем curl и cifs-utils для healthcheck и NAS
     command: >
-      bash -c "apt-get update && apt-get install -y curl && 
+      bash -c "apt-get update && 
+      apt-get install -y curl cifs-utils && 
       pip install --no-cache-dir -r requirements.txt && 
       python app.py"
 

@@ -1406,20 +1406,24 @@ scheduler.add_job(preload_ib238_schedule, 'cron', hour=0, minute=0)
 backup_manager = BackupManager(DB_CONFIG, UPLOAD_FOLDER)
 
 def create_automatic_backup():
-    """Создание автоматического бэкапа"""
+    """Создание автоматического месячного бэкапа"""
     try:
         # Используем системный пароль для автоматических бэкапов
         auto_backup_password = os.environ.get('AUTO_BACKUP_PASSWORD', 'default_auto_backup_password_change_this')
-        backup_path = backup_manager.create_backup(auto_backup_password)
-        print(f"Автоматический бэкап создан: {backup_path}")
+        backup_path = backup_manager.create_backup(auto_backup_password, backup_type='auto')
+        print(f"Автоматический месячный бэкап создан: {backup_path}")
         
-        # Удаляем старые бэкапы, оставляя последние 10
-        backup_manager.delete_old_backups(keep_count=10)
+        # Удаляем старые локальные бэкапы
+        backup_manager.delete_old_backups(keep_count=5)  # Ручные бэкапы
+        
+        print("Автоматическое создание бэкапа завершено успешно")
     except Exception as e:
         print(f"Ошибка создания автоматического бэкапа: {e}")
+        import traceback
+        print(f"Stack trace: {traceback.format_exc()}")
 
-# Добавляем задачу создания бэкапов каждую неделю (воскресенье в 3:00)
-scheduler.add_job(create_automatic_backup, 'cron', day_of_week=6, hour=3, minute=0)
+# Добавляем задачу создания бэкапов каждую неделю (первое число в 3:00)
+scheduler.add_job(create_automatic_backup, 'cron', day=1, hour=3, minute=0)
 
 
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
@@ -1610,7 +1614,16 @@ def admin_bulk_action_eblan_images():
 def admin_backup():
     """Страница управления бэкапами"""
     backups = backup_manager.get_backup_list()
-    return render_template('admin/backup.html', backups=backups)
+    
+    # Получаем информацию о NAS конфигурации
+    nas_config = {
+        'enabled': os.environ.get('NAS_BACKUP_ENABLED', 'false').lower() == 'true',
+        'host': os.environ.get('NAS_HOST'),
+        'share': os.environ.get('NAS_SHARE'), 
+        'path': os.environ.get('NAS_BACKUP_PATH', 'schedparse_backups')
+    }
+    
+    return render_template('admin/backup.html', backups=backups, nas_config=nas_config)
 
 @app.route('/admin/backup/create', methods=['POST'])
 @admin_required
@@ -1701,6 +1714,48 @@ def admin_delete_backup(filename):
             return jsonify({'success': True, 'message': 'Бэкап удален'})
         else:
             return jsonify({'success': False, 'error': 'Файл не найден'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+    
+@app.route('/admin/backup/test_nas', methods=['POST'])
+@admin_required
+def admin_test_nas():
+    """Тест подключения к NAS"""
+    try:
+        result = backup_manager.test_nas_connection()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/backup/manual_nas_upload/<filename>', methods=['POST'])
+@admin_required
+def admin_manual_nas_upload(filename):
+    """Ручная загрузка бэкапа на NAS"""
+    try:
+        backup_path = os.path.join(backup_manager.backup_folder, filename)
+        if not os.path.exists(backup_path) or not filename.endswith('.encrypted'):
+            return jsonify({'success': False, 'error': 'Файл бэкапа не найден'})
+        
+        # Загружаем на NAS
+        backup_manager._upload_to_nas(backup_path, filename)
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Бэкап {filename} успешно загружен на NAS'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/backup/force_monthly', methods=['POST'])
+@admin_required  
+def admin_force_monthly_backup():
+    """Принудительный запуск месячного бэкапа"""
+    try:
+        create_automatic_backup()
+        return jsonify({
+            'success': True,
+            'message': 'Месячный бэкап успешно создан и отправлен на NAS (если настроен)'
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
