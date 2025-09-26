@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS eblans (
 CREATE TABLE IF NOT EXISTS eblan_comments (
     id SERIAL PRIMARY KEY,
     eblan_id INTEGER NOT NULL,
-    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    rating INTEGER CHECK (rating IS NULL OR (rating >= 1 AND rating <= 5)),
     comment TEXT,
     features TEXT[], -- Array of feature strings
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

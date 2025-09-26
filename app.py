@@ -139,12 +139,12 @@ def init_database():
                     )
                 """)
                 
-                # Create comments table
+                # Create comments table with nullable rating
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS eblan_comments (
                         id SERIAL PRIMARY KEY,
                         eblan_id INTEGER NOT NULL,
-                        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                        rating INTEGER CHECK (rating IS NULL OR (rating >= 1 AND rating <= 5)), -- Рейтинг теперь может быть NULL
                         comment TEXT,
                         features TEXT[], -- Array of feature strings
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -176,7 +176,6 @@ def init_database():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_lect_string ON lecture_images(lect_string)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_created_at ON lecture_images(created_at DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_reply_to ON eblan_comments(reply_to_id)")
-# ...existing code...
                 
                 conn.commit()
                 print("Database tables initialized successfully")
@@ -396,13 +395,13 @@ def get_eblan_rating():
                 else:
                     eblan_fio, eblan_img = eblan_row
 
-                # Calculate rating stats
+                # Calculate rating stats (только для комментариев с рейтингом)
                 cur.execute("""
                     SELECT 
                         ROUND(AVG(rating)::numeric, 1) as avg_rating,
                         COUNT(*) as rating_count
                     FROM eblan_comments 
-                    WHERE eblan_id = %s
+                    WHERE eblan_id = %s AND rating IS NOT NULL
                 """, (eblan_id,))
                 
                 rating_row = cur.fetchone()
@@ -421,7 +420,7 @@ def get_eblan_rating():
     except Exception as e:
         print(f"Error in get_eblan_rating: {e}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
-
+    
 @app.route('/api/createEblanComment', methods=['POST'])
 def create_eblan_comment():
     """Create a new comment for lecturer with reply functionality."""
@@ -431,27 +430,34 @@ def create_eblan_comment():
             
         data = request.get_json(silent=True) or {}
         eblan_id = data.get('eblanId')
-        rating = data.get('rating')
+        rating = data.get('rating')  # Теперь может быть None
         comment = data.get('comment', '')
         features = data.get('features', [])
-        reply_to_id = data.get('replyToId')  # NEW: ID комментария на который отвечаем
+        reply_to_id = data.get('replyToId')
 
         # Validation
         if not eblan_id:
             return jsonify({"error": "eblanId is required"}), 400
-        if not rating:
-            return jsonify({"error": "rating is required"}), 400
+        
+        # Убираем обязательную проверку рейтинга
+        # if not rating:
+        #     return jsonify({"error": "rating is required"}), 400
+
+        # Проверяем, что есть хотя бы комментарий или рейтинг
+        if not comment and not rating:
+            return jsonify({"error": "Either comment or rating is required"}), 400
 
         try:
             eblan_id = int(eblan_id)
-            rating = int(rating)
+            if rating is not None:
+                rating = int(rating)
+                # Проверяем валидность рейтинга только если он указан
+                if rating < 1 or rating > 5:
+                    return jsonify({"error": "Rating must be between 1 and 5"}), 400
             if reply_to_id is not None:
                 reply_to_id = int(reply_to_id)
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid eblanId, rating, or replyToId format"}), 400
-
-        if rating < 1 or rating > 5:
-            return jsonify({"error": "Rating must be between 1 and 5"}), 400
 
         if not isinstance(features, list):
             return jsonify({"error": "Features must be an array"}), 400
@@ -479,7 +485,7 @@ def create_eblan_comment():
                     if parent_comment[1] != eblan_id:
                         return jsonify({"error": "Can only reply to comments for the same eblan"}), 400
                 
-                # Insert comment with reply_to_id
+                # Insert comment with nullable rating
                 cur.execute("""
                     INSERT INTO eblan_comments (eblan_id, rating, comment, features, ip_address, reply_to_id)
                     VALUES (%s, %s, %s, %s, %s, %s)
@@ -501,10 +507,10 @@ def create_eblan_comment():
                 for row in cur.fetchall():
                     comments.append({
                         "id": row[0],
-                        "rating": row[1],
+                        "rating": row[1],  # Может быть None
                         "comment": row[2] or "",
                         "features": row[3] or [],
-                        "replyToId": row[4],  # NEW: будет NULL если это основной комментарий
+                        "replyToId": row[4],
                         "createdAt": row[5].isoformat() if row[5] else None
                     })
 
