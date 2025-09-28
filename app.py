@@ -347,7 +347,7 @@ class RedisCache:
 # Initialize cache instances
 schedule_cache = RedisCache(prefix="schedule", default_ttl=43200)  # 12 hours for schedule data
 search_cache = RedisCache(prefix="search", default_ttl=1209600)     # 14 days for search results
-filter_cache = RedisCache(prefix="filter", default_ttl=43200)    # 30 minutes for filter options
+filter_cache = RedisCache(prefix="filter", default_ttl=43200)    # 12 hours for filter options
 
 # NEW RATING ENDPOINTS
 
@@ -395,6 +395,13 @@ def get_eblan_rating():
                 else:
                     eblan_fio, eblan_img = eblan_row
 
+                # Если ФИО нет, получаем через поиск
+                if not eblan_fio:
+                    lecturer_info = ensure_lecturer_fio_in_db(eblan_id)
+                    eblan_fio = lecturer_info.get('fio', f"Преподаватель {eblan_id}")
+                    if not eblan_img:
+                        eblan_img = lecturer_info.get('img')
+
                 # Calculate rating stats (только для комментариев с рейтингом)
                 cur.execute("""
                     SELECT 
@@ -419,6 +426,362 @@ def get_eblan_rating():
 
     except Exception as e:
         print(f"Error in get_eblan_rating: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+    
+# Простая функция для получения ФИО через поиск
+def get_lecturer_fio_from_search(lecturer_id):
+    """
+    Получить ФИО преподавателя через поиск по его ID
+    """
+    cache_key = f"lecturer_fio_{lecturer_id}"
+    
+    # Проверяем кэш
+    cached_fio = search_cache.get(cache_key)
+    if cached_fio:
+        return cached_fio
+    
+    try:
+        # Ищем преподавателя по ID через поиск
+        search_url = "https://ruz.fa.ru/api/search"
+        params = {"term": str(lecturer_id), "type": "lecturer"}
+        
+        response = requests_session.get(search_url, params=params, timeout=5)
+        if response.status_code == 200:
+            results = response.json()
+            
+            # Ищем точное совпадение по ID
+            for item in results:
+                if str(item.get("id")) == str(lecturer_id):
+                    fio = item.get("label", "").strip()
+                    if fio:
+                        # Сразу сохраняем в базу
+                        upsert_eblan_fio(lecturer_id, fio)
+                        # Кэшируем
+                        search_cache.set(cache_key, fio, ttl=86400)  # 24 часа
+                        return fio
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error getting lecturer FIO from search: {e}")
+        return None
+
+# Обновленная функция для гарантии ФИО в базе
+def ensure_lecturer_fio_in_db(lecturer_id):
+    """
+    Убедиться, что ФИО преподавателя есть в базе данных
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Проверяем, есть ли уже ФИО в базе
+                cur.execute("""
+                    SELECT eblan_fio, 
+                           CASE WHEN eblan_img_approved THEN eblan_img ELSE NULL END as eblan_img
+                    FROM eblans 
+                    WHERE eblan_id = %s
+                """, (lecturer_id,))
+                
+                row = cur.fetchone()
+                
+                if row and row[0]:  # ФИО уже есть
+                    eblan_fio, eblan_img = row
+                    name_parts = eblan_fio.split()
+                    if len(name_parts) >= 2:
+                        last_name = name_parts[0]
+                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
+                        short_name = f"{last_name} {initials}"
+                    else:
+                        short_name = eblan_fio
+                    
+                    return {
+                        'fio': eblan_fio,
+                        'shortName': short_name,
+                        'img': eblan_img
+                    }
+                
+                # ФИО нет, получаем через поиск
+                fio = get_lecturer_fio_from_search(lecturer_id)
+                
+                if fio:
+                    # Генерируем короткое имя
+                    name_parts = fio.split()
+                    if len(name_parts) >= 2:
+                        last_name = name_parts[0]
+                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
+                        short_name = f"{last_name} {initials}"
+                    else:
+                        short_name = fio
+                    
+                    # Получаем обновленную информацию из БД
+                    cur.execute("""
+                        SELECT CASE WHEN eblan_img_approved THEN eblan_img ELSE NULL END as eblan_img
+                        FROM eblans 
+                        WHERE eblan_id = %s
+                    """, (lecturer_id,))
+                    
+                    img_row = cur.fetchone()
+                    eblan_img = img_row[0] if img_row else None
+                    
+                    return {
+                        'fio': fio,
+                        'shortName': short_name,
+                        'img': eblan_img
+                    }
+                
+                # Если ничего не получилось
+                return {
+                    'fio': f"Преподаватель {lecturer_id}",
+                    'shortName': f"Преподаватель {lecturer_id}",
+                    'img': None
+                }
+                
+    except Exception as e:
+        print(f"Error ensuring lecturer FIO in DB: {e}")
+        return {
+            'fio': f"Преподаватель {lecturer_id}",
+            'shortName': f"Преподаватель {lecturer_id}",
+            'img': None
+        }
+
+# Простой роут поиска преподавателей
+@app.route('/api/searchLecturers', methods=['GET', 'POST'])
+def search_lecturers():
+    """Поиск только преподавателей с сохранением ФИО."""
+    try:
+        if request.method == 'GET':
+            search_string = request.args.get('searchString', '')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            search_string = data.get('searchString', '')
+    
+        if len(search_string) < 2:
+            return jsonify({"result": [], "error": "Search string too short, minimum 2 characters"})
+        
+        cache_key = f"search_lecturers_{search_string}"
+        cached_results = search_cache.get(cache_key)
+        if cached_results is not None:
+            return jsonify({"result": cached_results})
+        
+        # Ищем преподавателей
+        api_results = search_ruz_api(2, search_string)
+        
+        results = []
+        for item in api_results:
+            if not isinstance(item, dict):
+                continue
+                
+            lecturer_id = item.get("id")
+            lecturer_name = item.get("label", "").strip()
+            
+            if not lecturer_id or not lecturer_name:
+                continue
+                
+            try:
+                lecturer_id = int(lecturer_id)
+            except (ValueError, TypeError):
+                continue
+            
+            # СРАЗУ сохраняем ФИО в базу
+            upsert_eblan_fio(lecturer_id, lecturer_name)
+            
+            # Генерируем короткое имя
+            name_parts = lecturer_name.split()
+            if len(name_parts) >= 2:
+                last_name = name_parts[0]
+                initials = ''.join([part[0] + '.' for part in name_parts[1:]])
+                short_name = f"{last_name} {initials}"
+            else:
+                short_name = lecturer_name
+            
+            # Получаем изображение из базы
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT CASE WHEN eblan_img_approved THEN eblan_img ELSE NULL END
+                            FROM eblans WHERE eblan_id = %s
+                        """, (lecturer_id,))
+                        img_row = cur.fetchone()
+                        eblan_img = img_row[0] if img_row else None
+            except:
+                eblan_img = None
+            
+            result_item = {
+                "id": str(lecturer_id),
+                "name": lecturer_name,
+                "shortName": short_name,
+                "description": item.get("description", ""),
+                "img": eblan_img
+            }
+            results.append(result_item)
+        
+        # Кэшируем на 1 час
+        search_cache.set(cache_key, results, ttl=3600)
+        
+        return jsonify({"result": results})
+        
+    except Exception as e:
+        return jsonify({"error": f"Request processing error: {str(e)}"}), 400
+
+@app.route('/api/getTopRatedLecturers', methods=['GET', 'POST'])
+def get_top_rated_lecturers():
+    """Получить топ преподавателей с отзывами."""
+    try:
+        if request.method == 'GET':
+            limit = request.args.get('limit', '50')
+            offset = request.args.get('offset', '0')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            limit = data.get('limit', 50)
+            offset = data.get('offset', 0)
+
+        try:
+            limit = int(limit)
+            offset = int(offset)
+            if limit <= 0 or limit > 100:
+                limit = 50
+            if offset < 0:
+                offset = 0
+        except (ValueError, TypeError):
+            limit = 50
+            offset = 0
+
+        cache_key = f"top_rated_lecturers_{limit}_{offset}"
+        cached_results = filter_cache.get(cache_key)
+        if cached_results is not None:
+            return jsonify(cached_results)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        e.eblan_id,
+                        e.eblan_fio,
+                        CASE WHEN e.eblan_img_approved THEN e.eblan_img ELSE NULL END as eblan_img,
+                        ROUND(AVG(c.rating)::numeric, 1) as avg_rating,
+                        COUNT(CASE WHEN c.rating IS NOT NULL THEN 1 END) as rating_count,
+                        COUNT(c.id) as total_comments,
+                        MAX(c.created_at) as last_comment_date
+                    FROM eblans e
+                    INNER JOIN eblan_comments c ON e.eblan_id = c.eblan_id
+                    GROUP BY e.eblan_id, e.eblan_fio, e.eblan_img, e.eblan_img_approved
+                    HAVING COUNT(c.id) > 0
+                    ORDER BY 
+                        ROUND(AVG(c.rating)::numeric, 1) DESC NULLS LAST,
+                        COUNT(CASE WHEN c.rating IS NOT NULL THEN 1 END) DESC,
+                        MAX(c.created_at) DESC
+                    LIMIT %s OFFSET %s
+                """, (limit, offset))
+                
+                lecturers = []
+                for row in cur.fetchall():
+                    eblan_id, eblan_fio, eblan_img, avg_rating, rating_count, total_comments, last_comment_date = row
+                    
+                    # Если ФИО нет, пытаемся получить через поиск
+                    if not eblan_fio:
+                        lecturer_info = ensure_lecturer_fio_in_db(eblan_id)
+                        eblan_fio = lecturer_info.get('fio', f"Преподаватель {eblan_id}")
+                        if not eblan_img:
+                            eblan_img = lecturer_info.get('img')
+                    
+                    # Генерируем короткое имя
+                    if eblan_fio and eblan_fio != f"Преподаватель {eblan_id}":
+                        name_parts = eblan_fio.split()
+                        if len(name_parts) >= 2:
+                            last_name = name_parts[0]
+                            initials = ''.join([part[0] + '.' for part in name_parts[1:]])
+                            short_name = f"{last_name} {initials}"
+                        else:
+                            short_name = eblan_fio
+                    else:
+                        short_name = eblan_fio
+
+                    lecturer = {
+                        "eblanId": eblan_id,
+                        "eblanName": eblan_fio,
+                        "eblanNameShort": short_name,
+                        "eblanImg": eblan_img,
+                        "rating": float(avg_rating) if avg_rating else 0.0,
+                        "ratingCount": rating_count,
+                        "totalComments": total_comments,
+                        "lastCommentDate": last_comment_date.isoformat() if last_comment_date else None
+                    }
+                    lecturers.append(lecturer)
+
+                # Общее количество
+                cur.execute("""
+                    SELECT COUNT(DISTINCT e.eblan_id)
+                    FROM eblans e
+                    INNER JOIN eblan_comments c ON e.eblan_id = c.eblan_id
+                """)
+                total_count = cur.fetchone()[0]
+
+        result = {
+            "lecturers": lecturers,
+            "totalCount": total_count,
+            "hasMore": (offset + limit) < total_count
+        }
+
+        # Кэшируем на 10 минут
+        filter_cache.set(cache_key, result, ttl=600)
+        
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"Error in get_top_rated_lecturers: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/getLecturerStats', methods=['GET', 'POST'])
+def get_lecturer_stats():
+    """Получить общую статистику по отзывам преподавателей."""
+    try:
+        cache_key = "lecturer_stats"
+        cached_results = filter_cache.get(cache_key)
+        if cached_results is not None:
+            return jsonify(cached_results)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(DISTINCT eblan_id) FROM eblan_comments")
+                lecturers_with_reviews = cur.fetchone()[0]
+                
+                cur.execute("SELECT COUNT(*) FROM eblan_comments")
+                total_reviews = cur.fetchone()[0]
+                
+                cur.execute("SELECT COUNT(*) FROM eblan_comments WHERE rating IS NOT NULL")
+                total_ratings = cur.fetchone()[0]
+                
+                cur.execute("SELECT ROUND(AVG(rating)::numeric, 2) FROM eblan_comments WHERE rating IS NOT NULL")
+                avg_rating_all = cur.fetchone()[0]
+                
+                cur.execute("""
+                    SELECT rating, COUNT(*) as count
+                    FROM eblan_comments 
+                    WHERE rating IS NOT NULL
+                    GROUP BY rating
+                    ORDER BY rating
+                """)
+                rating_distribution = {row[0]: row[1] for row in cur.fetchall()}
+
+        result = {
+            "lecturersWithReviews": lecturers_with_reviews,
+            "totalReviews": total_reviews,
+            "totalRatings": total_ratings,
+            "averageRating": float(avg_rating_all) if avg_rating_all else 0.0,
+            "ratingDistribution": rating_distribution
+        }
+
+        filter_cache.set(cache_key, result, ttl=1800)  # 30 минут
+        
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"Error in get_lecturer_stats: {e}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
     
 @app.route('/api/createEblanComment', methods=['POST'])
