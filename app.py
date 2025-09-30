@@ -176,6 +176,8 @@ def init_database():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_lect_string ON lecture_images(lect_string)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_lecture_images_created_at ON lecture_images(created_at DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_eblan_comments_reply_to ON eblan_comments(reply_to_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_eblans_fio ON eblans(eblan_fio) WHERE eblan_fio IS NOT NULL")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_eblans_img_approved ON eblans(eblan_img_approved) WHERE eblan_img_approved = TRUE")
                 
                 conn.commit()
                 print("Database tables initialized successfully")
@@ -468,13 +470,16 @@ def get_lecturer_fio_from_search(lecturer_id):
 
 # Обновленная функция для гарантии ФИО в базе
 def ensure_lecturer_fio_in_db(lecturer_id):
-    """
-    Убедиться, что ФИО преподавателя есть в базе данных
-    """
+    """Убедиться, что ФИО преподавателя есть в базе данных"""
+    # Проверяем кэш СНАЧАЛА
+    cache_key = f"lecturer_info_{lecturer_id}"
+    cached_info = search_cache.get(cache_key)
+    if cached_info:
+        return cached_info
+    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Проверяем, есть ли уже ФИО в базе
                 cur.execute("""
                     SELECT eblan_fio, 
                            CASE WHEN eblan_img_approved THEN eblan_img ELSE NULL END as eblan_img
@@ -484,36 +489,33 @@ def ensure_lecturer_fio_in_db(lecturer_id):
                 
                 row = cur.fetchone()
                 
-                if row and row[0]:  # ФИО уже есть
+                if row and row[0]:
                     eblan_fio, eblan_img = row
                     name_parts = eblan_fio.split()
                     if len(name_parts) >= 2:
-                        last_name = name_parts[0]
-                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
-                        short_name = f"{last_name} {initials}"
+                        short_name = f"{name_parts[0]} {''.join(p[0] + '.' for p in name_parts[1:])}"
                     else:
                         short_name = eblan_fio
                     
-                    return {
+                    result = {
                         'fio': eblan_fio,
                         'shortName': short_name,
                         'img': eblan_img
                     }
+                    search_cache.set(cache_key, result, ttl=86400)
+                    return result
                 
                 # ФИО нет, получаем через поиск
                 fio = get_lecturer_fio_from_search(lecturer_id)
                 
                 if fio:
-                    # Генерируем короткое имя
                     name_parts = fio.split()
                     if len(name_parts) >= 2:
-                        last_name = name_parts[0]
-                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
-                        short_name = f"{last_name} {initials}"
+                        short_name = f"{name_parts[0]} {''.join(p[0] + '.' for p in name_parts[1:])}"
                     else:
                         short_name = fio
                     
-                    # Получаем обновленную информацию из БД
+                    # Получаем обновленную информацию
                     cur.execute("""
                         SELECT CASE WHEN eblan_img_approved THEN eblan_img ELSE NULL END as eblan_img
                         FROM eblans 
@@ -523,18 +525,22 @@ def ensure_lecturer_fio_in_db(lecturer_id):
                     img_row = cur.fetchone()
                     eblan_img = img_row[0] if img_row else None
                     
-                    return {
+                    result = {
                         'fio': fio,
                         'shortName': short_name,
                         'img': eblan_img
                     }
+                    search_cache.set(cache_key, result, ttl=86400)
+                    return result
                 
-                # Если ничего не получилось
-                return {
+                # Fallback
+                result = {
                     'fio': f"Преподаватель {lecturer_id}",
                     'shortName': f"Преподаватель {lecturer_id}",
                     'img': None
                 }
+                search_cache.set(cache_key, result, ttl=3600)
+                return result
                 
     except Exception as e:
         print(f"Error ensuring lecturer FIO in DB: {e}")
@@ -1237,155 +1243,107 @@ def format_date_for_api(dt):
 def get_filter_options():
     try:
         if request.method == 'GET':
-            # For GET requests, use parameters from query string
             date_from_str = request.args.get('dateFrom', '2025-09-01T00:00:00Z')
             date_to_str = request.args.get('dateTo', '2025-09-30T23:59:59Z')
             group = request.args.get('group')
-            eblan = request.args.get('eblan')  # Lecturer ID
-        else:  # POST
-            # Improved POST handling
+            eblan = request.args.get('eblan')
+        else:
             if not request.is_json:
                 return jsonify({"error": "Request must be JSON"}), 400
-                
-            # For POST requests, get from JSON body
             data = request.get_json(silent=True) or {}
             date_from_str = data.get('dateFrom', '2025-09-01T00:00:00Z')
             date_to_str = data.get('dateTo', '2025-09-30T23:59:59Z')
             group = data.get('group')
             eblan = data.get('eblan')
         
-        # Generate cache key
+        # СТАБИЛЬНЫЙ ключ кэша
         cache_key = f"filter_{date_from_str}_{date_to_str}_{group}_{eblan}"
         
-        # Check cache first
         cached_data = filter_cache.get(cache_key)
         if cached_data is not None:
-            print(f"Cache hit for filter options: {cache_key}")
             return jsonify(cached_data)
     
-        # Convert parameters to integers if provided
-        if group is not None:
-            if isinstance(group, int):
-                group_id = group
-            elif isinstance(group, str) and group.isdigit():
-                group_id = int(group)
-            else:
-                group_id = None
-        else:
-            group_id = None
-            
-        if eblan is not None:
-            if isinstance(eblan, int):
-                person_id = eblan
-            elif isinstance(eblan, str) and eblan.isdigit():
-                person_id = int(eblan)
-            else:
-                person_id = None
-        else:
-            person_id = None
+        # Конвертация параметров
+        group_id = int(group) if group and str(group).isdigit() else None
+        person_id = int(eblan) if eblan and str(eblan).isdigit() else None
     
-        # Parse date range with proper timezone handling
+        # Парсинг дат
         try:
             date_from = datetime.fromisoformat(date_from_str.replace('Z', '+00:00'))
             date_to = datetime.fromisoformat(date_to_str.replace('Z', '+00:00'))
             
-            # Handle case where dateTo is before dateFrom
             if date_to < date_from:
-                date_from, date_to = date_to, date_from  # Swap them
+                date_from, date_to = date_to, date_from
         except ValueError:
-            return jsonify({"error": "Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM:SSZ)"}), 400
+            return jsonify({"error": "Invalid date format"}), 400
         
-        # Format dates for API request
         api_start_date = format_date_for_api(date_from)
         api_end_date = format_date_for_api(date_to)
         
-        # Fetch schedule data from external API
-        # Prioritize person_id if provided, otherwise use group_id
-        if person_id is not None:
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, 
-                                               person_id=person_id)
+        # Получаем данные
+        if person_id:
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, person_id=person_id)
         else:
-            schedule_data = fetch_schedule_data(api_start_date, api_end_date, 
-                                               group_id=group_id)
+            schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=group_id)
         
-        # Initialize sets to store unique values
-        disciplines = set()
-        locations = set()
-        lecturers = set()
+        # ОПТИМИЗАЦИЯ: Используем словари вместо set для хранения данных
+        disciplines = {}  # {id: name}
+        locations = {}
+        lecturers = {}  # {id: (name, short)}
         
-        # Process schedule entries
         for entry in schedule_data:
             try:
-                # Skip entries without a date
                 if not entry.get('date'):
                     continue
                 
-                # Filter by eblan (lecturer) if provided
                 if person_id and entry.get('lecturerOid') and int(entry.get('lecturerOid')) != person_id:
                     continue
-                    
-                # Extract discipline with stable ID based on name
+                
+                # Дисциплина
                 if entry.get('discipline'):
                     discipline_name = entry['discipline']
                     discipline_id = generate_stable_id(discipline_name)
-                    disciplines.add((discipline_id, discipline_name))
+                    disciplines[discipline_id] = discipline_name
                 
-                # Extract location with stable ID based on name
+                # Локация
                 if entry.get('building'):
                     building_name = entry['building']
                     building_id = generate_stable_id(building_name)
-                    locations.add((building_id, building_name))
+                    locations[building_id] = building_name
                 
-                # Extract lecturer with stable ID based on full name
+                # Преподаватель
                 lecturer_field = entry.get('lecturer_title', entry.get('lecturer'))
                 if lecturer_field:
                     full_name = lecturer_field
                     lecturer_id = entry.get('lecturerOid', generate_stable_id(full_name))
                     
-                    # Generate short name
                     name_parts = full_name.split()
                     if len(name_parts) >= 2:
-                        last_name = name_parts[0]
-                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
-                        short_name = f"{last_name} {initials}"
+                        short_name = f"{name_parts[0]} {''.join(p[0] + '.' for p in name_parts[1:])}"
                     else:
                         short_name = full_name
                     
-                    lecturers.add((lecturer_id, full_name, short_name))
+                    lecturers[lecturer_id] = (full_name, short_name)
             except Exception as e:
-                # Skip entries with invalid format
-                print(f"Error processing entry: {e}")
                 continue
         
-        # Format the response
+        # Форматируем ответ
         response = {
-            "disciplines": [
-                {"id": id, "name": name} 
-                for id, name in disciplines
-            ],
-            "locations": [
-                {"id": id, "name": name}
-                for id, name in locations
-            ],
-            "eblans": [
-                {"id": id, "name": name, "short": short}
-                for id, name, short in lecturers
-            ]
+            "disciplines": [{"id": id, "name": name} for id, name in disciplines.items()],
+            "locations": [{"id": id, "name": name} for id, name in locations.items()],
+            "eblans": [{"id": id, "name": name, "short": short} for id, (name, short) in lecturers.items()]
         }
         
-        # Cache the result
         filter_cache.set(cache_key, response)
+        return jsonify(response)
         
     except Exception as e:
         return jsonify({"error": f"Request processing error: {str(e)}"}), 400
-    
-    return jsonify(response)
 
 @app.route('/api/getRUZ', methods=['GET', 'POST'])
 def get_ruz():
     try:
         if request.method == 'GET':
-            # For GET requests, use parameters from query string
             date_from_str = request.args.get('dateFrom', '2025-09-01T00:00:00Z')
             date_to_str = request.args.get('dateTo', '2025-09-30T23:59:59Z')
             filters_str = request.args.get('filters', '{}')
@@ -1393,173 +1351,170 @@ def get_ruz():
                 filters = json.loads(filters_str)
             except json.JSONDecodeError:
                 filters = {}
-        else:  # POST
-            # Improved POST request handling
+        else:
             if not request.is_json:
                 return jsonify({"error": "Request must be JSON"}), 400
-                
-            # For POST requests, get from JSON body
             data = request.get_json(silent=True) or {}
             date_from_str = data.get('dateFrom', '2025-09-01T00:00:00Z')
             date_to_str = data.get('dateTo', '2025-09-30T23:59:59Z')
             filters = data.get('filters', {})
         
-        # Улучшенное формирование ключа кэша с чётким выделением group_id
-        group_id_str = str(filters.get('groupId', 'default'))
-        eblan_id_str = str(filters.get('eblanIds', ['default'])[0] if filters.get('eblanIds') else 'default')
-        cache_key = f"ruz_{date_from_str}_{date_to_str}_group_{group_id_str}_filters_{hash(json.dumps(filters))}"
+        # КРИТИЧНО: Создаем СТАБИЛЬНЫЙ ключ кэша
+        # Используем sorted JSON для одинакового хэша одинаковых данных
+        filters_stable = json.dumps(filters, sort_keys=True)
+        cache_key = f"ruz_{date_from_str}_{date_to_str}_{hashlib.md5(filters_stable.encode()).hexdigest()}"
         
-        # Добавим отладочную информацию
-        print(f"Using cache key: {cache_key}, filters: {filters}")
-        
-        # Check cache first
+        # Проверяем кэш ПЕРВЫМ делом
         cached_data = schedule_cache.get(cache_key)
         if cached_data is not None:
-            print(f"Cache hit for RUZ data: {cache_key}")
+            print(f"Cache HIT for RUZ: {cache_key}")
             return jsonify(cached_data)
+        
+        print(f"Cache MISS for RUZ: {cache_key}")
     
-        # Extract filter IDs
+        # Извлекаем фильтры
         discipline_ids = filters.get('disciplineIds')
         location_ids = filters.get('locationIds')
         eblan_ids = filters.get('eblanIds')
         group_ids = filters.get('groupIds') or ([filters.get('groupId')] if filters.get('groupId') else [])
-        # group_ids теперь всегда список
 
-        # Convert IDs to integers if they're provided
-        if discipline_ids is not None:
-            discipline_ids = [int(id) for id in discipline_ids]
-        if location_ids is not None:
-            location_ids = [int(id) for id in location_ids]
-        if eblan_ids is not None:
-            eblan_ids = [int(id) for id in eblan_ids]
+        # Конвертируем в int
+        if discipline_ids:
+            discipline_ids = set(int(id) for id in discipline_ids)
+        if location_ids:
+            location_ids = set(int(id) for id in location_ids)
+        if eblan_ids:
+            eblan_ids = set(int(id) for id in eblan_ids)
         group_ids = [int(gid) for gid in group_ids if gid]
 
-        # Parse date range
+        # Парсим даты
         try:
             date_from = datetime.fromisoformat(date_from_str.replace('Z', '+00:00'))
             date_to = datetime.fromisoformat(date_to_str.replace('Z', '+00:00'))
             
-            # DEBUG: Print the dates we're processing
-            print(f"Processing date range: {date_from} to {date_to}")
-            
-            # Handle case where dateTo is before dateFrom
             if date_to < date_from:
-                date_from, date_to = date_to, date_from  # Swap them
+                date_from, date_to = date_to, date_from
                 
-            # Add a day buffer on each side to account for timezone differences
+            # Буфер для часовых поясов
             date_from = date_from - timedelta(days=1)
             date_to = date_to + timedelta(days=1)
-            print(f"Adjusted date range with buffer: {date_from} to {date_to}")
         except ValueError:
-            return jsonify({"error": "Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM:SSZ)"}), 400
+            return jsonify({"error": "Invalid date format"}), 400
         
-        # Format dates for API request
         api_start_date = format_date_for_api(date_from)
         api_end_date = format_date_for_api(date_to)
-        print(f"API date range: {api_start_date} to {api_end_date}")
         
-        # Fetch schedule data from external API
-        # Если есть только eblanIds — ищем по каждому преподу!
+        # ОПТИМИЗАЦИЯ: Дедупликация запросов к API
+        schedule_data = []
+        seen_entries = set()  # Для удаления дубликатов
+        
         if eblan_ids and not group_ids:
-            schedule_data = []
+            # Запросы по преподавателям
             for eblan_id in eblan_ids:
-                schedule_data.extend(fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id))
+                data = fetch_schedule_data(api_start_date, api_end_date, person_id=eblan_id)
+                for entry in data:
+                    # Создаем уникальный ключ для entry
+                    entry_key = (
+                        entry.get('date'),
+                        entry.get('beginLesson'),
+                        entry.get('discipline'),
+                        entry.get('lecturerOid')
+                    )
+                    if entry_key not in seen_entries:
+                        seen_entries.add(entry_key)
+                        schedule_data.append(entry)
         elif group_ids:
-            schedule_data = []
             for gid in group_ids:
-                schedule_data.extend(fetch_schedule_data(api_start_date, api_end_date, group_id=gid))
+                data = fetch_schedule_data(api_start_date, api_end_date, group_id=gid)
+                for entry in data:
+                    entry_key = (
+                        entry.get('date'),
+                        entry.get('beginLesson'),
+                        entry.get('discipline'),
+                        entry.get('lecturerOid')
+                    )
+                    if entry_key not in seen_entries:
+                        seen_entries.add(entry_key)
+                        schedule_data.append(entry)
         else:
             schedule_data = fetch_schedule_data(api_start_date, api_end_date, group_id=154479)
-        print(f"Found {len(schedule_data)} schedule entries before filtering")
         
-        # Initialize list to store processed lessons
+        print(f"Fetched {len(schedule_data)} unique entries")
+        
+        # ОПТИМИЗАЦИЯ: Предварительное вычисление stable_id
+        discipline_id_cache = {}
+        location_id_cache = {}
+        
+        def get_cached_discipline_id(name):
+            if name not in discipline_id_cache:
+                discipline_id_cache[name] = generate_stable_id(name)
+            return discipline_id_cache[name]
+        
+        def get_cached_location_id(name):
+            if name not in location_id_cache:
+                location_id_cache[name] = generate_stable_id(name)
+            return location_id_cache[name]
+        
         lessons = []
         
-        # Process schedule entries
+        # ОПТИМИЗАЦИЯ: Batch upsert для eblan_fio
+        eblans_to_upsert = {}  # {eblan_id: eblan_name}
+        
         for entry in schedule_data:
             try:
-                # Skip entries without a date or time info
                 if not entry.get('date') or not entry.get('beginLesson') or not entry.get('endLesson'):
                     continue
 
-                # Generate stable IDs for filtering
+                # Быстрая генерация ID через кэш
                 discipline_name = entry.get('discipline', '')
-                discipline_id = generate_stable_id(discipline_name) if discipline_name else None
+                discipline_id = get_cached_discipline_id(discipline_name) if discipline_name else None
                 
                 building_name = entry.get('building', '')
-                location_id = generate_stable_id(building_name) if building_name else None
+                location_id = get_cached_location_id(building_name) if building_name else None
                 
-                # Get lecturer info - USE THE ACTUAL LECTURER ID FROM THE API
                 lecturer_field = entry.get('lecturer_title', entry.get('lecturer', ''))
-                eblan_id = entry.get('lecturerOid')  # Use the actual ID from the API
+                eblan_id = entry.get('lecturerOid')
                 
-                # Make sure eblan_id is an integer for comparison
                 if eblan_id:
                     try:
                         eblan_id = int(eblan_id)
                     except (ValueError, TypeError):
-                        # Fall back to generating ID if actual ID isn't available
-                        eblan_id = generate_stable_id(lecturer_field) if lecturer_field else None
+                        eblan_id = get_cached_discipline_id(lecturer_field) if lecturer_field else None
                 
-                # Debug the filtering
-                filtered_out = False
-                filtered_out_reason = None
-                
-                # Apply filters
-                if discipline_ids is not None and discipline_id is not None and discipline_id not in discipline_ids:
-                    filtered_out = True
-                    filtered_out_reason = f"discipline_id {discipline_id} not in filter list"
-                    
-                if not filtered_out and location_ids is not None and location_id is not None and location_id not in location_ids:
-                    filtered_out = True
-                    filtered_out_reason = f"location_id {location_id} not in filter list"
-                    
-                if not filtered_out and eblan_ids is not None and eblan_id is not None and eblan_id not in eblan_ids:
-                    filtered_out = True
-                    filtered_out_reason = f"eblan_id {eblan_id} not in filter list {eblan_ids}"
-            
-                if filtered_out:
-                    print(f"Filtered out entry: {filtered_out_reason}")
+                # ОПТИМИЗАЦИЯ: Быстрая фильтрация через set membership (O(1))
+                if discipline_ids and discipline_id not in discipline_ids:
+                    continue
+                if location_ids and location_id not in location_ids:
+                    continue
+                if eblan_ids and eblan_id not in eblan_ids:
                     continue
                 
-                # Prepare start and end times
                 date_str = entry.get('date')
                 start_time_str = entry.get('beginLesson', '00:00')
                 end_time_str = entry.get('endLesson', '00:00')
 
-                # Определяем лекция ли это
                 kind_of_work = entry.get('kindOfWork', '').lower()
-                is_lecture = any(
-                    kw in kind_of_work
-                    for kw in ['лекции', 'lecture', 'Лекции']
-                )
+                is_lecture = any(kw in kind_of_work for kw in ['лекции', 'lecture'])
 
-                # Prepare lecturer (eblan) info
                 eblan_name = lecturer_field
 
+                # Собираем для batch upsert
                 if eblan_id and eblan_name:
-                    try:
-                        upsert_eblan_fio(eblan_id, eblan_name)
-                    except Exception as e:
-                        print(f"Failed to upsert eblan fio: {e}")
-
+                    eblans_to_upsert[eblan_id] = eblan_name
                 
-                # Generate short name
+                # Генерация короткого имени
                 eblan_short = ""
                 if eblan_name:
                     name_parts = eblan_name.split()
                     if len(name_parts) >= 2:
-                        last_name = name_parts[0]
-                        initials = ''.join([part[0] + '.' for part in name_parts[1:]])
-                        eblan_short = f"{last_name} {initials}"
+                        eblan_short = f"{name_parts[0]} {''.join(p[0] + '.' for p in name_parts[1:])}"
                     else:
                         eblan_short = eblan_name
                 
-                # Create lesson object
                 lesson = {
                     "start": f"{date_str}T{start_time_str}Z",
                     "end": f"{date_str}T{end_time_str}Z",
-                    "isLecture": is_lecture,  # <--- Новое поле
+                    "isLecture": is_lecture,
                     "eblanInfo": {
                         "eblanId": eblan_id,
                         "eblanName": eblan_name,
@@ -1575,24 +1530,48 @@ def get_ruz():
                         "DisciplineName": discipline_name
                     }
                 }
-
                 lessons.append(lesson)
                 
             except Exception as e:
-                # Skip entries with invalid format
                 print(f"Error processing entry: {e}")
                 continue
         
-        # Create the response object
+        # BATCH UPSERT всех eblan_fio за один раз
+        if eblans_to_upsert:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Используем VALUES с множественными строками
+                        values = [(eid, name) for eid, name in eblans_to_upsert.items()]
+                        from psycopg2.extras import execute_values
+                        execute_values(
+                            cur,
+                            """
+                            INSERT INTO eblans (eblan_id, eblan_fio, updated_at)
+                            VALUES %s
+                            ON CONFLICT (eblan_id) DO UPDATE
+                            SET eblan_fio = EXCLUDED.eblan_fio,
+                                updated_at = CURRENT_TIMESTAMP
+                            """,
+                            values,
+                            template="(%s, %s, CURRENT_TIMESTAMP)"
+                        )
+                        conn.commit()
+                        print(f"Batch upserted {len(values)} eblans")
+            except Exception as e:
+                print(f"Batch upsert error: {e}")
+        
         response = {"lessons": lessons}
         
-        # Cache the result
+        # Кэшируем результат
         schedule_cache.set(cache_key, response)
+        print(f"Cached {len(lessons)} lessons for key {cache_key}")
     
+        return jsonify(response)
+        
     except Exception as e:
+        print(f"Error in getRUZ: {e}")
         return jsonify({"error": f"Request processing error: {str(e)}"}), 400
-    
-    return jsonify(response)
 
 # Function to search the RUZ API with caching
 def search_ruz_api(search_type, search_query):
