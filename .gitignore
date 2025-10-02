@@ -73,6 +73,7 @@ uploads/
 postgres-data/
 redis-data/
 
+test_navigation.py
 test_api.sh
 test_results/
 test_image_upload.sh

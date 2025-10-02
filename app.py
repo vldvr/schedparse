@@ -1101,6 +1101,112 @@ def get_lect_imgs():
         print(f"Error in get_lect_imgs: {e}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
+@app.route('/api/navigateB4', methods=['GET', 'POST'])
+def navigate_b4():
+    """Навигация между аудиториями в комплексе B4."""
+    try:
+        if request.method == 'GET':
+            from_room = request.args.get('from')
+            to_room = request.args.get('to')
+        else:  # POST
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+            data = request.get_json(silent=True) or {}
+            from_room = data.get('from')
+            to_room = data.get('to')
+
+        if not from_room or not to_room:
+            return jsonify({
+                "error": "Требуются параметры 'from' и 'to' с номерами аудиторий"
+            }), 400
+
+        # Проверяем, что обе аудитории относятся к B4
+        if not b4_navigator.is_b4_room(from_room):
+            return jsonify({
+                "error": f"Аудитория '{from_room}' не относится к комплексу B4",
+                "supported_format": "Поддерживаются аудитории вида 'B4/1234', 'В4/1234' или '1234' (где первая цифра - корпус 1,2,3)"
+            }), 400
+
+        if not b4_navigator.is_b4_room(to_room):
+            return jsonify({
+                "error": f"Аудитория '{to_room}' не относится к комплексу B4",
+                "supported_format": "Поддерживаются аудитории вида 'B4/1234', 'В4/1234' или '1234' (где первая цифра - корпус 1,2,3)"
+            }), 400
+
+        # Парсим аудитории
+        from_data = b4_navigator.parse_room(from_room)
+        to_data = b4_navigator.parse_room(to_room)
+
+        if not from_data:
+            return jsonify({
+                "error": f"Неверный формат аудитории отправления: '{from_room}'",
+                "supported_format": "Ожидается 4-значный номер, где 1 цифра - корпус (1,2,3), 2 цифра - этаж, 3-4 цифры - номер кабинета"
+            }), 400
+
+        if not to_data:
+            return jsonify({
+                "error": f"Неверный формат аудитории назначения: '{to_room}'",
+                "supported_format": "Ожидается 4-значный номер, где 1 цифра - корпус (1,2,3), 2 цифра - этаж, 3-4 цифры - номер кабинета"
+            }), 400
+
+        # Проверяем, что это не одна и та же аудитория
+        if from_data['full_number'] == to_data['full_number']:
+            return jsonify({
+                "success": True,
+                "from": {
+                    "room": from_data['full_number'],
+                    "originalRoom": from_data.get('original', from_data['full_number']),
+                    "building": from_data['building'],
+                    "floor": from_data['floor']
+                },
+                "to": {
+                    "room": to_data['full_number'],
+                    "originalRoom": to_data.get('original', to_data['full_number']),
+                    "building": to_data['building'],
+                    "floor": to_data['floor']
+                },
+                "navigation": {
+                    "steps": ["Вы уже находитесь в нужной аудитории"],
+                    "total_floor_changes": 0,
+                    "distance_info": "Перемещение не требуется"
+                }
+            })
+
+        # Находим путь
+        path = b4_navigator.find_path(from_room, to_room)
+        
+        if not path:
+            return jsonify({
+                "error": "Не удалось найти путь между указанными аудиториями",
+                "from": from_data,
+                "to": to_data
+            }), 400
+
+        return jsonify({
+            "success": True,
+            "from": {
+                "room": from_data['full_number'],
+                "originalRoom": from_data.get('original', from_data['full_number']),
+                "building": from_data['building'],
+                "floor": from_data['floor']
+            },
+            "to": {
+                "room": to_data['full_number'],
+                "originalRoom": to_data.get('original', to_data['full_number']),
+                "building": to_data['building'],
+                "floor": to_data['floor']
+            },
+            "navigation": {
+                "steps": path['steps'],
+                "total_floor_changes": path['total_floor_changes'],
+                "distance_info": path['distance_info']
+            }
+        })
+
+    except Exception as e:
+        print(f"Error in navigate_b4: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 # EXISTING SCHEDULE ENDPOINTS (keeping all existing functionality)
 
 # Fetch schedule data from external API with caching
@@ -1745,6 +1851,249 @@ def batch_process(items, process_func, batch_size=100):
         batch_results = [process_func(item) for item in batch]
         results.extend(batch_results)
     return results
+
+# Navigation between B4 building rooms
+class B4Navigator:
+    """Navigation system for B4 building complex."""
+    
+    def __init__(self):
+        # Переходы между корпусами на определенных этажах
+        self.building_connections = {
+            (1, 2): (3, 2),  # 1 корпус 2 этаж -> 3 корпус 2 этаж
+            (1, 5): (3, 4),  # 1 корпус 5 этаж -> 3 корпус 4 этаж
+            (2, 4): (3, 3),  # 2 корпус 4 этаж -> 3 корпус 3 этаж
+        }
+        
+        # Обратные переходы
+        reverse_connections = {}
+        for (from_building, from_floor), (to_building, to_floor) in self.building_connections.items():
+            reverse_connections[(to_building, to_floor)] = (from_building, from_floor)
+        self.building_connections.update(reverse_connections)
+        
+        # Переходы через первый этаж (по улице)
+        self.ground_floor_connections = [1, 2, 3]  # Корпуса, соединенные через 1 этаж
+    
+    def parse_room(self, room_str):
+        """Парсит строку аудитории типа 'B4/2316', '2316', 'B4/2227_ОВП', 'B4/!3610-3611 (Лаб. ИБ)', 'В4/ауд.3310(кк)'."""
+        if not room_str:
+            return None
+        
+        import re
+        
+        # Убираем префикс B4/ или В4/ если есть
+        room_clean = room_str.replace('B4/', '').replace('В4/', '')
+        
+        # Извлекаем основной номер аудитории с помощью регулярного выражения
+        # Ищем 4-значный номер в начале строки, возможно с префиксом !
+        patterns = [
+            r'^!?(\d{4})',           # !3610-3611 или 3610-3611 или просто 3610
+            r'^ауд\.(\d{4})',        # ауд.3310
+            r'^(\d{4})',             # обычный номер 2227
+        ]
+        
+        room_number = None
+        for pattern in patterns:
+            match = re.match(pattern, room_clean)
+            if match:
+                room_number = match.group(1)
+                break
+        
+        if not room_number or len(room_number) != 4:
+            return None
+            
+        try:
+            building = int(room_number[0])
+            floor = int(room_number[1])
+            room = int(room_number[2:4])
+        except (ValueError, IndexError):
+            return None
+        
+        # Проверяем, что корпус валидный (1, 2, 3)
+        if building not in [1, 2, 3]:
+            return None
+            
+        return {
+            'building': building,
+            'floor': floor,
+            'room': room,
+            'full_number': room_number,
+            'original': room_str  # Сохраняем оригинальную строку для отображения
+        }
+    
+    def is_b4_room(self, room_str):
+        """Проверяет, является ли аудитория частью комплекса B4."""
+        if not room_str:
+            return False
+            
+        # Проверяем наличие префикса B4/ или В4/
+        if 'B4/' in room_str or 'В4/' in room_str:
+            return True
+            
+        # Для строк без префикса пытаемся распарсить
+        parsed = self.parse_room(room_str)
+        return parsed is not None
+    
+    def find_path(self, from_room, to_room):
+        """Находит кратчайший путь между двумя аудиториями."""
+        from_data = self.parse_room(from_room)
+        to_data = self.parse_room(to_room)
+        
+        if not from_data or not to_data:
+            return None
+            
+        # Если в одном корпусе - просто смена этажа
+        if from_data['building'] == to_data['building']:
+            return self._same_building_path(from_data, to_data)
+        
+        # Поиск пути через переходы между корпусами
+        paths = []
+        
+        # Путь через прямые переходы
+        direct_path = self._find_direct_path(from_data, to_data)
+        if direct_path:
+            paths.append(direct_path)
+        
+        # Путь через первый этаж (улица)
+        ground_path = self._find_ground_floor_path(from_data, to_data)
+        if ground_path:
+            paths.append(ground_path)
+        
+        # Выбираем кратчайший путь (по количеству смен этажей)
+        if paths:
+            return min(paths, key=lambda p: p['total_floor_changes'])
+        
+        return None
+    
+    def _same_building_path(self, from_data, to_data):
+        """Путь в пределах одного корпуса."""
+        floor_diff = abs(to_data['floor'] - from_data['floor'])
+        
+        if floor_diff == 0:
+            return {
+                'steps': [f"Вы уже находитесь в корпусе {from_data['building']} на {from_data['floor']} этаже"],
+                'total_floor_changes': 0,
+                'distance_info': f"Переход по коридору в аудиторию {to_data['full_number']}"
+            }
+        
+        direction = "вверх" if to_data['floor'] > from_data['floor'] else "вниз"
+        floors_word = self._get_floors_word(floor_diff)
+        
+        # Исправляем формулировку
+        if direction == "вверх":
+            action = "Поднимитесь"
+        else:
+            action = "Спуститесь"
+        
+        return {
+            'steps': [f"{action} на {floor_diff} {floors_word} {direction} в корпусе {from_data['building']}"],
+            'total_floor_changes': floor_diff,
+            'distance_info': f"Смена этажа: {floor_diff} {floors_word}"
+        }
+    
+    def _find_direct_path(self, from_data, to_data):
+        """Поиск прямого пути через переходы между корпусами."""
+        from_building = from_data['building']
+        to_building = to_data['building']
+        
+        # Ищем все возможные переходы из текущего корпуса в целевой
+        possible_connections = []
+        for (building1, floor1), (building2, floor2) in self.building_connections.items():
+            if building1 == from_building and building2 == to_building:
+                possible_connections.append((floor1, floor2))
+        
+        if not possible_connections:
+            return None
+        
+        best_path = None
+        min_changes = float('inf')
+        
+        for from_connection_floor, to_connection_floor in possible_connections:
+            # Считаем общее количество смен этажей
+            changes_to_connection = abs(from_data['floor'] - from_connection_floor)
+            changes_from_connection = abs(to_connection_floor - to_data['floor'])
+            total_changes = changes_to_connection + changes_from_connection
+            
+            if total_changes < min_changes:
+                min_changes = total_changes
+                best_path = {
+                    'from_floor': from_connection_floor,
+                    'to_floor': to_connection_floor,
+                    'total_changes': total_changes
+                }
+        
+        if best_path:
+            steps = []
+            
+            # Движение к переходу
+            if from_data['floor'] != best_path['from_floor']:
+                floor_diff = abs(from_data['floor'] - best_path['from_floor'])
+                direction = "вверх" if best_path['from_floor'] > from_data['floor'] else "вниз"
+                action = "Поднимитесь" if direction == "вверх" else "Спуститесь"
+                floors_word = self._get_floors_word(floor_diff)
+                steps.append(f"{action} на {floor_diff} {floors_word} {direction} в корпусе {from_building}")
+            
+            # Переход между корпусами
+            steps.append(f"Перейдите из корпуса {from_building} в корпус {to_building} (переход на {best_path['from_floor']} этаже)")
+            
+            # Движение от перехода к целевой аудитории
+            if best_path['to_floor'] != to_data['floor']:
+                floor_diff = abs(best_path['to_floor'] - to_data['floor'])
+                direction = "вверх" if to_data['floor'] > best_path['to_floor'] else "вниз"
+                action = "Поднимитесь" if direction == "вверх" else "Спуститесь"
+                floors_word = self._get_floors_word(floor_diff)
+                steps.append(f"{action} на {floor_diff} {floors_word} {direction} в корпусе {to_building}")
+            
+            return {
+                'steps': steps,
+                'total_floor_changes': min_changes,
+                'distance_info': f"Переход через {best_path['from_floor']} этаж"
+            }
+        
+        return None
+    
+    def _find_ground_floor_path(self, from_data, to_data):
+        """Путь через первый этаж (по улице)."""
+        from_building = from_data['building']
+        to_building = to_data['building']
+        
+        if from_building not in self.ground_floor_connections or to_building not in self.ground_floor_connections:
+            return None
+        
+        # Спуск на первый этаж
+        changes_down = from_data['floor'] - 1
+        # Подъем с первого этажа
+        changes_up = to_data['floor'] - 1
+        total_changes = changes_down + changes_up
+        
+        steps = []
+        
+        if changes_down > 0:
+            floors_word = self._get_floors_word(changes_down)
+            steps.append(f"Спуститесь на {changes_down} {floors_word} вниз на 1 этаж в корпусе {from_building}")
+        
+        steps.append(f"Выйдите на улицу и перейдите в корпус {to_building}")
+        
+        if changes_up > 0:
+            floors_word = self._get_floors_word(changes_up)
+            steps.append(f"Поднимитесь на {changes_up} {floors_word} вверх в корпусе {to_building}")
+        
+        return {
+            'steps': steps,
+            'total_floor_changes': total_changes,
+            'distance_info': f"Переход по улице (1 этаж)"
+        }
+    
+    def _get_floors_word(self, count):
+        """Возвращает правильное склонение слова 'этаж'."""
+        if count % 10 == 1 and count % 100 != 11:
+            return "этаж"
+        elif count % 10 in [2, 3, 4] and count % 100 not in [12, 13, 14]:
+            return "этажа"
+        else:
+            return "этажей"
+
+# Инициализируем навигатор
+b4_navigator = B4Navigator()
 
 # Initialize scheduler
 scheduler = BackgroundScheduler()
